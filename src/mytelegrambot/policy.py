@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from mythings.ledger import Ledger
 from mythings.policy import Action, Decision, Policy, PolicyResult
 
-from mytelegrambot.transport import TelegramTransport
+from mytelegrambot.transport import TelegramTransport, describe
 
 _DEFAULT_TIMEOUT = 300.0
 
@@ -35,7 +35,8 @@ def ask_human(
     try:
         message_id = transport.send_message(format_ask_message(action), buttons=("Allow", "Deny"))
         reply = transport.poll_decision(message_id, timeout=timeout)
-    except Exception:  # any transport/API failure fails closed, never propagates
+    except Exception as exc:  # any transport/API failure fails closed, never propagates
+        print(f"mytelegrambot: transport error during ask, failing closed: {describe(exc)}")
         reply = None
 
     if reply == "allow":
