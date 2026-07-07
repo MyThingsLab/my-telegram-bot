@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "notify":
         result = notify(ledger, transport=transport, since=args.since)
         print(f"{result.outcome}: {result.entries_count} entries")
-        return 0
+        return 1 if result.outcome == "failure" else 0
 
     action = Action(kind=args.action_kind, payload=json.loads(args.payload_json))
     result = ask_human(action, transport=transport, ledger=ledger, timeout=args.timeout)

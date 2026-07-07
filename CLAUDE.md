@@ -21,7 +21,10 @@ covered here defers to `HARNESS.md`, then `mythings-core/docs/CONVENTIONS.md`.
   wraps an inner `Policy`, delegates non-`ASK` decisions untouched, and only
   for `ASK` sends a real Telegram Allow/Deny prompt and blocks (bounded by
   `timeout`) for a reply. **Fail-closed is non-negotiable**: on timeout, no
-  reply, or any Telegram API error, resolve `DENY`, never `ALLOW`. Calls the
+  reply, or any Telegram API error, resolve `DENY`, never `ALLOW`. A `notify`
+  push that hits a transport error is likewise non-fatal — it records no notify
+  entry (so the watermark holds and the same digest is retried next run) and
+  returns `outcome="failure"` rather than crashing the sole comms channel. Calls the
   Telegram Bot API over stdlib `urllib.request` + `json` only — no
   `python-telegram-bot` SDK. `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` come from
   the environment, never logged, never written to the ledger. The network
