@@ -12,6 +12,15 @@ covered here defers to `HARNESS.md`, then `mythings-core/docs/CONVENTIONS.md`.
   notifications, and turns a `Policy` `ASK` decision into a real synchronous
   human confirmation instead of collapsing to `DENY` under an unattended
   runner.
+- **Incremental notify cursor:** the default `notify` window is tracked by a
+  **count** (`notified_count` = how many ledger entries the last run covered),
+  an index into the append-only ledger — not a timestamp, which at second
+  granularity with an exclusive boundary would silently drop entries sharing a
+  wall-clock second with the watermark. A digest never includes the tool's own
+  `notify` bookkeeping (its `ask` entries do appear — a human was prompted).
+  `--since <ts>` is an ad-hoc manual window that ships everything after `ts`
+  and deliberately does **not** move the cursor (its record carries no
+  `notified_count`), so a manual re-send never consumes the automatic queue.
 - **The single Engine call:** none — deterministic. This is a plumbing/comms
   tool, not a judgment tool; it relays existing `Action`/`Ledger` data
   verbatim, it never composes prose that could hallucinate over what it's
@@ -23,7 +32,7 @@ covered here defers to `HARNESS.md`, then `mythings-core/docs/CONVENTIONS.md`.
   `timeout`) for a reply. **Fail-closed is non-negotiable**: on timeout, no
   reply, or any Telegram API error, resolve `DENY`, never `ALLOW`. A `notify`
   push that hits a transport error is likewise non-fatal — it records no notify
-  entry (so the watermark holds and the same digest is retried next run) and
+  entry (so the cursor holds and the same digest is retried next run) and
   returns `outcome="failure"` rather than crashing the sole comms channel. Calls the
   Telegram Bot API over stdlib `urllib.request` + `json` only — no
   `python-telegram-bot` SDK. `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` come from
