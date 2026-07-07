@@ -1,0 +1,51 @@
+name: Manual ask-flow smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      action-kind:
+        description: "Action kind to evaluate (matches mythings.policy.Action.kind)"
+        default: "bash"
+      payload-json:
+        description: "Action payload as JSON (matched against MyGuard's default rules)"
+        default: '{"command": "git clean -fdx"}'
+      timeout:
+        description: "Seconds to wait for an Allow/Deny reply"
+        default: "300"
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install mythings-core and my-guard
+        run: |
+          pip install "mythings-core @ git+https://github.com/${{ github.repository_owner }}/mythings-core@main"
+          pip install "my-guard @ git+https://github.com/${{ github.repository_owner }}/my-guard@main"
+      - name: Install
+        run: pip install -e .
+      - name: Ask a human over Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          import json, os
+          from mythings.ledger import Ledger
+          from mythings.policy import Action
+          from myguard import Guard
+          from mytelegrambot.policy import TelegramPolicy
+          from mytelegrambot.transport import HTTPTelegramTransport
+
+          action = Action(kind='${{ inputs.action-kind }}', payload=json.loads('''${{ inputs.payload-json }}'''))
+          transport = HTTPTelegramTransport(os.environ['TELEGRAM_BOT_TOKEN'], os.environ['TELEGRAM_CHAT_ID'])
+          ledger = Ledger('.mythings/ledger.jsonl')
+          policy = TelegramPolicy(Guard(), transport=transport, ledger=ledger, timeout=float('${{ inputs.timeout }}'))
+          result = policy.evaluate(action)
+          print(f'decision={result.decision.value} reason={result.reason!r} rule={result.rule!r}')
+          "
