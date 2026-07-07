@@ -20,13 +20,13 @@ class HTTPTelegramTransport:
         self._token = bot_token
         self._chat_id = chat_id
 
-    def _call(self, method: str, payload: dict) -> dict:
+    def _call(self, method: str, payload: dict, *, timeout: float = 10) -> dict:
         url = _API.format(token=self._token, method=method)
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return json.loads(resp.read())
 
     def send_message(self, text: str, *, buttons: tuple[str, str] | None = None) -> int:
@@ -53,7 +53,10 @@ class HTTPTelegramTransport:
             if offset is not None:
                 params["offset"] = offset
             try:
-                result = self._call("getUpdates", params)
+                # Telegram holds the connection open for up to long_poll seconds
+                # server-side; the client socket timeout must exceed that or we
+                # give up before Telegram ever gets to respond.
+                result = self._call("getUpdates", params, timeout=long_poll + 10)
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 print(f"mytelegrambot: getUpdates failed, failing closed: {describe(exc)}")
                 return None
