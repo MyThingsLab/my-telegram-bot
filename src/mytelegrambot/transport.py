@@ -54,7 +54,8 @@ class HTTPTelegramTransport:
                 params["offset"] = offset
             try:
                 result = self._call("getUpdates", params)
-            except (urllib.error.URLError, TimeoutError, OSError):
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                print(f"mytelegrambot: getUpdates failed, failing closed: {describe(exc)}")
                 return None
             for update in result.get("result", []):
                 offset = update["update_id"] + 1
@@ -62,6 +63,12 @@ class HTTPTelegramTransport:
                 if decision is not None:
                     return decision
         return None
+
+
+def describe(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"{exc!r} {exc.read().decode('utf-8', 'replace')}"
+    return repr(exc)
 
 
 def _decision_from_update(update: dict, message_id: int) -> str | None:
