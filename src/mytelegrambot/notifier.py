@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from mythings.ledger import Ledger, LedgerEntry
 
-from mytelegrambot.transport import TelegramTransport
+from mytelegrambot.transport import TelegramTransport, describe
 
 
 def _now() -> str:
@@ -25,7 +25,7 @@ def format_notify_message(entries: list[LedgerEntry]) -> str:
 
 @dataclass(frozen=True)
 class NotifyResult:
-    outcome: str  # success | skipped
+    outcome: str  # success | skipped | failure
     entries_count: int
     message_id: int | None
 
@@ -54,7 +54,15 @@ def notify(
         )
         return NotifyResult("skipped", 0, None)
 
-    message_id = transport.send_message(format_notify_message(entries))
+    try:
+        message_id = transport.send_message(format_notify_message(entries))
+    except Exception as exc:
+        # The sole comms channel must not crash on a transient Telegram outage.
+        # Record nothing: with no successful notify entry the watermark stays
+        # put, so the same digest is retried on the next run rather than lost.
+        print(f"mytelegrambot: notify send failed, will retry next run: {describe(exc)}")
+        return NotifyResult("failure", len(entries), None)
+
     ledger.record(
         tool="mytelegrambot",
         kind="notify",

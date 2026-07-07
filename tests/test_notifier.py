@@ -4,7 +4,7 @@ from pathlib import Path
 
 from mythings.ledger import Ledger
 
-from conftest import FakeTransport, entry
+from conftest import ErrorTransport, FakeTransport, entry
 from mytelegrambot.notifier import notify
 
 
@@ -39,6 +39,26 @@ def test_notify_skips_when_nothing_new(tmp_path: Path) -> None:
     assert result.entries_count == 0
     assert transport.sent == []
     assert list(ledger)[0].outcome == "skipped"
+
+
+def test_notify_send_failure_is_graceful_and_entries_are_retried(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append(entry("mytester", "run", "success", "cover pkg:f", ts="2026-07-06T01:00:00Z"))
+
+    failed = notify(ledger, transport=ErrorTransport())  # Telegram outage on send
+
+    assert failed.outcome == "failure"
+    assert failed.entries_count == 1
+    assert failed.message_id is None
+    # A failed send records no notify entry, so the watermark must not advance.
+    assert [e for e in ledger if e.kind == "notify"] == []
+
+    good = FakeTransport()
+    retry = notify(ledger, transport=good)
+
+    assert retry.outcome == "success"
+    assert retry.entries_count == 1  # the same entry is re-sent, not lost
+    assert "cover pkg:f" in good.sent[0][0]
 
 
 def test_notify_second_call_is_incremental(tmp_path: Path) -> None:
