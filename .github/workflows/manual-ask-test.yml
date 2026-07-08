@@ -23,9 +23,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install mythings-core and my-guard
+      - name: Install my-things-core and my-guard
         run: |
-          pip install "mythings-core @ git+https://github.com/${{ github.repository_owner }}/mythings-core@main"
+          pip install "my-things-core @ git+https://github.com/${{ github.repository_owner }}/my-things-core@main"
           pip install "my-guard @ git+https://github.com/${{ github.repository_owner }}/my-guard@main"
       - name: Install
         run: pip install -e .

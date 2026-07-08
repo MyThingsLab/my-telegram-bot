@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/MyThingsLab/my-telegram-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/MyThingsLab/my-telegram-bot/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/MyThingsLab/my-telegram-bot/branch/main/graph/badge.svg)](https://codecov.io/gh/MyThingsLab/my-telegram-bot) ![Python](https://img.shields.io/badge/python-3.11%2B-blue) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Bridges the [MyThingsLab](../mythings-core) harness to the user over Telegram:
+Bridges the [MyThingsLab](../my-things-core) harness to the user over Telegram:
 pushes ledger notifications, and turns a `Policy` `ASK` decision into a real
 synchronous human confirmation instead of collapsing to `DENY` under an
 unattended runner.
@@ -40,7 +40,7 @@ inside another tool's runtime — the CLI above is for manual/CI-script use.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ../mythings-core -e ".[dev]"
+pip install -e ../my-things-core -e ".[dev]"
 pytest
 ```
 

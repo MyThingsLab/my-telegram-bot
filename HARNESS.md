@@ -4,14 +4,14 @@ You are an agent developing a MyThingsLab tool. These rules are inherited by
 **every** tool and backed by mechanical gates (ruff, pytest, CI, branch
 protection, MyGuard). The canonical copy ships in `mythings/harness.md`; inside a
 tool this is a **vendored copy** kept in sync by a drift-check test — never edit
-it in a tool. To change a rule, edit the canonical in `mythings-core` and
+it in a tool. To change a rule, edit the canonical in `my-things-core` and
 re-vendor the `HARNESS.md` copies.
 
 ## The shape you must uphold
 - A tool reads one unit of work (a GitHub issue), does deterministic pre-work
   (lint / index / checks) with **no** model call, calls the Engine **once** for
   the single step that needs judgment, and opens a **PR — never a merge**.
-- Build on the mythings-core contracts (`ledger`, `policy`, `engine`, `github`,
+- Build on the my-things-core contracts (`ledger`, `policy`, `engine`, `github`,
   `isolation`). Do not re-implement them; do not add a sixth contract lightly.
 - Dependency-free runtime: shell out to `gh` / `git`, don't pull SDKs. Dev-only
   deps (pytest, ruff) are fine.
@@ -34,7 +34,7 @@ re-vendor the `HARNESS.md` copies.
 - CI is Linux-only, one job, with `concurrency: cancel-in-progress`, `paths-ignore`
   for docs, draft-PR skip, and a timeout. Do not add macOS/Windows runners.
 - Append a `dev-ledger/` entry via `python -m mythings._devledger` for each
-  milestone and decision — see `mythings-core/docs/PROVENANCE.md`.
+  milestone and decision — see `my-things-core/docs/PROVENANCE.md`.
 
 ## Ownership & placement
 - All MyThingsLab repos live under the `MyThingsLab` GitHub org, public, and are
