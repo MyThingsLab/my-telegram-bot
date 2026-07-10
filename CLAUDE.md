@@ -98,6 +98,17 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   `callback_query` from a non-operator chat is dropped too — an `ask` prompt
   only ever goes to the operator, so a tester must never be able to resolve
   one.
+- **A knock is recorded, but only locally.** "Silent" is about what *they*
+  observe: no reply, no `answerCallbackQuery`. It never meant the operator
+  must stay blind. Without a record, a prospective tester's first message is
+  unrecoverable — the cursor advances past it and Telegram never redelivers —
+  so `pending.PendingChats` writes one `kind=unknown_chat` entry per
+  unrecognized chat and `mytelegrambot testers pending` lists them. Two bounds
+  keep it from being a spam sink: **deduplicated by `chat_id`** (rebuilt from
+  the ledger on restart, so a crash-loop can't re-record), and **capped at
+  `MAX_PENDING` distinct chats**, past which knocks are dropped exactly as
+  before. Recorded regardless of `--testers-db`: you must see who knocked
+  before you have anyone to put in a database.
 - **Tester spend is capped, fail-closed.** `/idea` is the only Engine-spending
   command, so it is the only metered one (`idea_command.metered_idea`). A
   tester's reservation is taken from their quota *before* the call and
