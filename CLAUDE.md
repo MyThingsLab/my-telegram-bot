@@ -26,24 +26,34 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
 - **The single Engine call:** none *directly* — `notify`/`ask` stay fully
   deterministic, relaying existing `Action`/`Ledger` data verbatim, never
   composing prose that could hallucinate over what it's relaying. The `/idea`
-  path handled by `run` makes exactly one Engine call, but this tool never
-  calls the Engine itself: that call is entirely delegated to MyIdea's own
-  already-shipped, already-tested `myidea.explore.explore()`, imported as a
-  library. The other `run` commands stay deterministic, no Engine, no side
-  effects: `/help` and `/start` echo a fixed command list (`help_command.py`);
+  and `/note` paths handled by `run` each make exactly one Engine call, but this
+  tool never calls the Engine itself: those calls are entirely delegated to the
+  owning tool's own already-shipped, already-tested code — MyIdea's
+  `myidea.explore.explore()` and MyNotes' `mynotes.tag.tag()` — imported as
+  libraries. Filing (`file_idea`, `file_note`) is deterministic and spends
+  nothing; the capture verb composes filing + the one Engine call. The other
+  `run` commands stay deterministic, no Engine, no side effects: `/help` and
+  `/start` echo a fixed command list (`help_command.py`);
   `/status` renders counts read straight from the ledger (`status_command.py`).
   The `setup` CLI subcommand is a one-off admin call (no ledger, no Engine)
   that registers the `setMyCommands` menu and the persistent reply keyboard
   (`menu.py`); the keyboard's labels are literal `/commands` so a tap is just
   ordinary command text, routed by the ordinary parser.
-- **Dependency-direction exception, deliberate:** every other cross-tool
-  relationship in the fleet is a CLI hand-off, not a package dependency (e.g.
-  MyPresentation → MyTypster), to keep tool repos decoupled at the code level.
-  This tool imports `my-idea` (and, transitively, `my-guard`) directly as
-  Python packages instead — a one-off exception because `run` needs
-  `file_idea`'s/`explore`'s structured return values (`Issue`, `ExploreResult`)
-  in-process to compose one synchronous Telegram reply, not a fire-and-forget
-  hand-off. Do not "fix" this back to a subprocess call.
+- **Dependency-direction exception, and the rule behind it:** every other
+  cross-tool relationship in the fleet is a CLI hand-off, not a package
+  dependency (e.g. MyPresentation → MyTypster), to keep tool repos decoupled at
+  the code level. This tool imports `my-idea` and `my-notes` (and, transitively,
+  `my-guard`) directly as Python packages instead. Originally framed as a
+  one-off for `/idea`; `/note` made the actual rule explicit:
+
+  > **A capture verb imports its owning tool.**
+
+  A capture verb must compose *one synchronous Telegram reply* out of the
+  owning tool's structured return values (`Issue`, `ExploreResult`,
+  `TagResult`) in-process. A subprocess hand-off would force parsing stdout or
+  re-reading the issue to recover them — exactly the fragility this exception
+  exists to avoid. Do not "fix" these back to subprocess calls. A *non*-capture
+  relationship still has no business being a package dependency.
 - **Invariants / rules:** no `Workspace` — no code edits, no PR ever. This
   tool *is* a `Policy` decorator (`TelegramPolicy`), not a new contract: it
   wraps an inner `Policy`, delegates non-`ASK` decisions untouched, and only
@@ -109,8 +119,9 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   `MAX_PENDING` distinct chats**, past which knocks are dropped exactly as
   before. Recorded regardless of `--testers-db`: you must see who knocked
   before you have anyone to put in a database.
-- **Tester spend is capped, fail-closed.** `/idea` is the only Engine-spending
-  command, so it is the only metered one (`idea_command.metered_idea`). A
+- **Tester spend is capped, fail-closed.** `/idea`, `/note` and the
+  `Explore deeper` button are the Engine-spending paths, so they are the metered
+  ones (`metered_idea`, `metered_note`, `explore_idea`). A
   tester's reservation is taken from their quota *before* the call and
   refunded only if the call never happened (an exception) — a crash therefore
   over-counts against the tester rather than letting an unbilled call through.

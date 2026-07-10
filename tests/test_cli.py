@@ -144,7 +144,7 @@ def test_run_wires_the_daemon_with_routes_and_an_authorizer(
     code = cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
 
     assert code == 0
-    assert set(captured["routes"]) == {"idea", "status", "help", "start"}
+    assert set(captured["routes"]) == {"idea", "note", "status", "help", "start"}
     authorizer = captured["authorizer"]
     assert authorizer.authorize("chat").is_operator
     assert authorizer.authorize("999") is None  # no --testers-db: operator only
@@ -252,8 +252,8 @@ def test_setup_registers_the_command_menu_and_keyboard(
     # Registered the ☰ menu and pushed one greeting carrying the reply keyboard.
     assert len(transport.commands_set) == 1
     registered = {name for name, _desc in transport.commands_set[0]}
-    assert {"idea", "status", "help"} <= registered
-    assert transport.keyboards[-1] == (("/idea",), ("/status", "/help"))
+    assert {"idea", "note", "status", "help"} <= registered
+    assert transport.keyboards[-1] == (("/idea", "/note"), ("/status", "/help"))
     assert "registered" in capsys.readouterr().out
 
 
@@ -387,3 +387,45 @@ def test_run_records_knocks_even_without_a_testers_db(
     cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
 
     assert captured["pending"] is not None
+
+
+def test_run_wires_the_note_route_to_the_metered_handler(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    seen: dict = {}
+
+    def fake_metered_note(text: str, principal, *, store, repo, **kwargs) -> Reply:
+        seen["text"] = text
+        seen["repo"] = repo
+        return Reply("noted")
+
+    monkeypatch.setattr(cli, "metered_note", fake_metered_note)
+    captured = _captured_run(monkeypatch)
+    _use_transport(monkeypatch, FakeTransport())
+
+    cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
+    reply = captured["routes"]["note"]("a thought", operator())
+
+    assert reply.text == "noted"
+    assert seen["text"] == "a thought"
+    # Notes go to their own repo, not my-idea's.
+    assert seen["repo"] == cli.DEFAULT_NOTE_REPO
+
+
+def test_run_note_repo_flag_overrides_the_default(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    seen: dict = {}
+
+    def fake_metered_note(text: str, principal, *, repo, **kwargs) -> Reply:
+        seen["repo"] = repo
+        return Reply("noted")
+
+    monkeypatch.setattr(cli, "metered_note", fake_metered_note)
+    captured = _captured_run(monkeypatch)
+    _use_transport(monkeypatch, FakeTransport())
+
+    cli.main(["run", "--engine", "noop", "--note-repo", "o/notes", "--ledger", str(ledger_path)])
+    captured["routes"]["note"]("x", operator())
+
+    assert seen["repo"] == "o/notes"
