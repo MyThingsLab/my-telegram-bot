@@ -89,6 +89,43 @@ def test_notify_never_reports_its_own_digest_bookkeeping(tmp_path: Path) -> None
     assert "mytelegrambot/notify" not in second_digest  # its own push isn't
 
 
+def test_notify_never_reports_its_own_poll_bookkeeping(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append(entry("mytester", "run", "success", "cover pkg:f", ts="2026-07-06T01:00:00Z"))
+    ledger.append(
+        entry("mytelegrambot", "poll", "skipped", "no updates", ts="2026-07-06T02:00:00Z")
+    )
+    transport = FakeTransport()
+
+    result = notify(ledger, transport=transport)
+
+    assert result.entries_count == 1
+    assert "cover pkg:f" in transport.sent[0][0]
+    assert "poll" not in transport.sent[0][0]
+
+
+def test_notify_includes_idea_entries_filed_via_the_bot(tmp_path: Path) -> None:
+    # An idea filed/explored through /idea is a real fleet event, exactly like
+    # an `ask` -- it must appear in the digest even though it was recorded by
+    # a command this same tool routed.
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.append(
+        entry(
+            "myidea",
+            "idea_filed",
+            "success",
+            "filed idea #9: a new tool",
+            ts="2026-07-06T01:00:00Z",
+        )
+    )
+    transport = FakeTransport()
+
+    result = notify(ledger, transport=transport)
+
+    assert result.entries_count == 1
+    assert "filed idea #9" in transport.sent[0][0]
+
+
 def test_notify_includes_its_own_ask_entries(tmp_path: Path) -> None:
     # An `ask` is a real fleet event (a human approved/denied an action) and
     # must appear in the digest, unlike the tool's own notify bookkeeping.

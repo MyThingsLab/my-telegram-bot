@@ -10,10 +10,12 @@ _SELF_TOOL = "mytelegrambot"
 
 
 def _notifiable(entries: list[LedgerEntry]) -> list[LedgerEntry]:
-    # The comms tool never reports on its own digest pushes -- that bookkeeping
-    # is pure noise in a digest. Its `ask` entries (a human was prompted to
-    # approve/deny an action) stay in; those are real fleet events worth seeing.
-    return [e for e in entries if not (e.tool == _SELF_TOOL and e.kind == "notify")]
+    # The comms tool never reports on its own digest pushes or its own inbound
+    # poll bookkeeping -- both are pure noise in a digest. Its `ask` entries (a
+    # human was prompted to approve/deny an action) stay in, and so do
+    # `myidea` entries filed via /idea -- both are real fleet events worth
+    # seeing, exactly like an `ask` is.
+    return [e for e in entries if not (e.tool == _SELF_TOOL and e.kind in ("notify", "poll"))]
 
 
 def last_notified_count(ledger: Ledger) -> int:

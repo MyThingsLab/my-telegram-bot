@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from mythings.engine import NoopEngine
 from mythings.ledger import Ledger
 
-from conftest import ErrorTransport, FakeTransport, entry
+from conftest import ErrorTransport, FakeTransport, entry, message_update
 from mytelegrambot import cli
 from mytelegrambot.transport import HTTPTelegramTransport
 
@@ -102,3 +103,55 @@ def test_ask_timeout_exits_nonzero(monkeypatch: pytest.MonkeyPatch, ledger_path:
     code = cli.main(["ask", "--action-kind", "bash", "--ledger", str(ledger_path)])
 
     assert code == 1
+
+
+def test_poll_with_no_updates_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _use_transport(monkeypatch, FakeTransport(updates=[]))
+
+    code = cli.main(["poll", "--ledger", str(ledger_path)])
+
+    assert code == 0
+    assert "skipped: 0 update(s), 0 routed" in capsys.readouterr().out
+
+
+def test_poll_routes_an_idea_command_through_the_wired_handler(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_handle_idea(text: str, *, github, policy, engine, ledger, repo) -> str:
+        captured["text"] = text
+        captured["repo"] = repo
+        captured["engine"] = engine
+        return "ok reply"
+
+    monkeypatch.setattr(cli, "handle_idea", fake_handle_idea)
+    transport = FakeTransport(updates=[message_update(1, "/idea a new tool")])
+    _use_transport(monkeypatch, transport)
+
+    code = cli.main(["poll", "--engine", "noop", "--ledger", str(ledger_path)])
+
+    assert code == 0
+    assert captured["text"] == "a new tool"
+    assert captured["repo"] == cli.DEFAULT_IDEA_REPO
+    assert isinstance(captured["engine"], NoopEngine)
+    assert transport.sent == [("ok reply", None)]
+
+
+def test_poll_repo_flag_overrides_the_default(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_handle_idea(text: str, *, github, policy, engine, ledger, repo) -> str:
+        captured["repo"] = repo
+        return "ok"
+
+    monkeypatch.setattr(cli, "handle_idea", fake_handle_idea)
+    _use_transport(monkeypatch, FakeTransport(updates=[message_update(1, "/idea x")]))
+
+    cli.main(["poll", "--engine", "noop", "--repo", "o/r", "--ledger", str(ledger_path)])
+
+    assert captured["repo"] == "o/r"
