@@ -7,13 +7,19 @@ from __future__ import annotations
 COMMAND_MENU: tuple[tuple[str, str], ...] = (
     ("idea", "File a my-idea issue and get an explored brief back"),
     ("note", "Capture a note as a my-notes issue, tagged and titled"),
+    ("catalog", "See everything the fleet can do, in plain language"),
+    ("wish", "Say what you want in your own words; I'll find the tool"),
     ("status", "Show what the bot has done so far"),
     ("help", "Show what the bot can do"),
 )
 
 # Labels are literal "/commands" so a tap sends real command text through the
 # ordinary parser -- no callback plumbing, no new attack surface.
-REPLY_KEYBOARD: tuple[tuple[str, ...], ...] = (("/idea", "/note"), ("/status", "/help"))
+REPLY_KEYBOARD: tuple[tuple[str, ...], ...] = (
+    ("/idea", "/note"),
+    ("/catalog", "/wish"),
+    ("/status", "/help"),
+)
 
 SETUP_GREETING = (
     "MyThingsLab bot is ready. Tap a shortcut below or type /help to see everything I can do."

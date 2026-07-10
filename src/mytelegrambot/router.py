@@ -42,10 +42,22 @@ class Command:
 
 @dataclass(frozen=True)
 class CallbackAction:
-    # "idea:12:explore" -> key "idea:explore", number 12. The key is what routes
-    # dispatch on; the number is the subject it acts upon.
+    # "idea:12:explore" -> key "idea:explore", subject "12".
+    # "guide:my-archivist:trial" -> key "guide:trial", subject "my-archivist".
+    #
+    # The key is what routes dispatch on; the subject is what it acts upon.
+    # Kept as a string because not every subject is an issue number -- a trial
+    # acts on a tool. Handlers that need an int narrow it themselves via
+    # `as_int()`, which returns None for a forged or stale button rather than
+    # raising inside the daemon loop.
     key: str
-    number: int
+    subject: str
+
+    def as_int(self) -> int | None:
+        try:
+            return int(self.subject)
+        except ValueError:
+            return None
 
 
 def parse_command(text: str) -> Command | None:
@@ -59,8 +71,11 @@ def parse_command(text: str) -> Command | None:
     return Command(name=name, args=rest.strip())
 
 
-def encode_action(target: str, number: int, verb: str) -> str:
-    data = f"{target}:{number}:{verb}"
+def encode_action(target: str, subject: str | int, verb: str) -> str:
+    parts = (target, str(subject), verb)
+    if any(":" in part or not part for part in parts):
+        raise ValueError(f"callback_data segments must be non-empty and colon-free: {parts}")
+    data = ":".join(parts)
     if len(data.encode("utf-8")) > _CALLBACK_DATA_MAX:
         raise ValueError(f"callback_data exceeds Telegram's {_CALLBACK_DATA_MAX} bytes: {data}")
     return data
@@ -70,14 +85,10 @@ def parse_callback(data: str) -> CallbackAction | None:
     parts = data.split(":")
     if len(parts) != 3:
         return None
-    target, raw_number, verb = parts
-    if not (target and verb):
+    target, subject, verb = parts
+    if not (target and subject and verb):
         return None
-    try:
-        number = int(raw_number)
-    except ValueError:
-        return None
-    return CallbackAction(key=f"{target}:{verb}", number=number)
+    return CallbackAction(key=f"{target}:{verb}", subject=subject)
 
 
 def dispatch(text: str, routes: dict[str, CommandHandler], principal: Principal) -> Reply | None:
