@@ -440,3 +440,29 @@ def test_an_unauthorized_chats_button_press_is_dropped_silently(tmp_path: Path) 
     assert result.dropped == 1
     assert transport.sent == []
     assert transport.answered == []  # not even a spinner ack: it learns nothing
+
+
+# ---------------------------------------------------------------- the gh boundary
+
+
+def test_gh_returns_stdout_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Proc:
+        returncode = 0
+        stdout = "closed\n"
+        stderr = ""
+
+    monkeypatch.setattr(idea_command.subprocess, "run", lambda *a, **k: _Proc())
+
+    assert idea_command._gh(["issue", "close", "1"]) == "closed\n"
+
+
+def test_gh_raises_with_stderr_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "could not resolve to an Issue\n"
+
+    monkeypatch.setattr(idea_command.subprocess, "run", lambda *a, **k: _Proc())
+
+    with pytest.raises(RuntimeError, match="could not resolve to an Issue"):
+        idea_command._gh(["issue", "close", "999"])
