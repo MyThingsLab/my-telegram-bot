@@ -13,6 +13,12 @@ _DEFAULT_TIMEOUT = 300.0
 _DEFAULT_INTERVAL = 0.5
 _SELF_TOOL = "mytelegrambot"
 
+# The daemon recognizes these two callback_data values as an answer to an ask,
+# never as a routed button press -- it imports ASK_DECISIONS from here so the
+# button and the router can never disagree about what an approval looks like.
+ASK_DECISIONS = ("allow", "deny")
+_ASK_BUTTONS = ((("Allow", ASK_DECISIONS[0]), ("Deny", ASK_DECISIONS[1])),)
+
 
 def format_ask_message(action: Action) -> str:
     lines = [f"Action: {action.kind}"]
@@ -64,7 +70,7 @@ def ask_human(
     message_id: int | None = None
     reply: str | None = None
     try:
-        message_id = transport.send_message(format_ask_message(action), buttons=("Allow", "Deny"))
+        message_id = transport.send_message(format_ask_message(action), inline=_ASK_BUTTONS)
         reply = await_decision(ledger, message_id, timeout=timeout)
     except Exception as exc:  # any transport/API failure fails closed, never propagates
         print(f"mytelegrambot: transport error during ask, failing closed: {describe(exc)}")

@@ -4,6 +4,7 @@ from mythings.ledger import LedgerEntry
 from mythings.testers import Tester
 
 from mytelegrambot.authz import OPERATOR, TESTER, Principal
+from mytelegrambot.router import InlineKeyboard
 
 OPERATOR_CHAT = "chat"
 
@@ -28,11 +29,17 @@ def message_update(update_id: int, text: str, *, chat_id: str | int = OPERATOR_C
 
 
 def callback_update(
-    update_id: int, message_id: int, data: str, *, chat_id: str | int = OPERATOR_CHAT
+    update_id: int,
+    message_id: int,
+    data: str,
+    *,
+    chat_id: str | int = OPERATOR_CHAT,
+    query_id: str = "q1",
 ) -> dict:
     return {
         "update_id": update_id,
         "callback_query": {
+            "id": query_id,
             "data": data,
             "message": {"message_id": message_id, "chat": {"id": chat_id}},
         },
@@ -40,13 +47,15 @@ def callback_update(
 
 
 class FakeTransport:
-    # Mocks only the Telegram HTTP boundary (send_message/fetch_updates).
+    # Mocks only the Telegram HTTP boundary
+    # (send_message/fetch_updates/answer_callback_query).
     def __init__(self, *, updates: list[dict] | None = None) -> None:
-        self.sent: list[tuple[str, tuple[str, str] | None]] = []
+        self.sent: list[tuple[str, InlineKeyboard | None]] = []
         self.sent_to: list[str | None] = []
         self.keyboards: list[tuple[tuple[str, ...], ...] | None] = []
         self.commands_set: list[tuple[tuple[str, str], ...]] = []
         self.fetched: list[tuple[int | None, float]] = []
+        self.answered: list[str] = []
         self._updates = updates or []
         self._next_id = 1
 
@@ -55,10 +64,10 @@ class FakeTransport:
         text: str,
         *,
         chat_id: str | None = None,
-        buttons: tuple[str, str] | None = None,
+        inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
     ) -> int:
-        self.sent.append((text, buttons))
+        self.sent.append((text, inline))
         self.sent_to.append(chat_id)
         self.keyboards.append(keyboard)
         message_id = self._next_id
@@ -67,6 +76,9 @@ class FakeTransport:
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
         self.commands_set.append(commands)
+
+    def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
+        self.answered.append(callback_query_id)
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]:
         self.fetched.append((offset, timeout))
@@ -82,12 +94,15 @@ class ErrorTransport:
         text: str,
         *,
         chat_id: str | None = None,
-        buttons: tuple[str, str] | None = None,
+        inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
     ) -> int:
         raise RuntimeError("telegram API unreachable")
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
+        raise RuntimeError("telegram API unreachable")
+
+    def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
         raise RuntimeError("telegram API unreachable")
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]:

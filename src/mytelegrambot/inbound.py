@@ -5,9 +5,17 @@ from dataclasses import dataclass
 
 from mythings.ledger import Ledger
 
-from mytelegrambot.authz import ChatAuthorizer
-from mytelegrambot.router import CommandHandler, dispatch
+from mytelegrambot.authz import ChatAuthorizer, Principal
+from mytelegrambot.policy import ASK_DECISIONS
+from mytelegrambot.router import (
+    CallbackHandler,
+    CommandHandler,
+    Reply,
+    dispatch,
+    dispatch_callback,
+)
 from mytelegrambot.transport import (
+    Callback,
     TelegramTransport,
     callback_from_update,
     chat_id_of,
@@ -16,6 +24,10 @@ from mytelegrambot.transport import (
 )
 
 _SELF_TOOL = "mytelegrambot"
+
+# `ask`'s Allow/Deny buttons carry the ASK_DECISIONS callback_data values. They are
+# never routed to a handler: they answer a question a *separate* process is
+# blocking on, and the ledger is how it hears the answer.
 
 # The daemon is the one consumer of Telegram's bot-wide offset queue. Every
 # update it fetches is classified and dispatched here:
@@ -52,6 +64,60 @@ class BatchResult:
     dropped: int
 
 
+def _send(transport: TelegramTransport, reply: Reply, principal: Principal) -> None:
+    try:
+        transport.send_message(reply.text, chat_id=principal.chat_id, inline=reply.inline)
+    except Exception as exc:
+        # The handler's side effects (e.g. an idea already filed on GitHub)
+        # happened before we got here -- a failed reply must not cause the update
+        # to be reprocessed, which would repeat them. The cursor still advances.
+        print(f"mytelegrambot: reply send failed: {describe(exc)}")
+
+
+def _handle_ask_decision(callback: Callback, *, ledger: Ledger) -> None:
+    ledger.record(
+        tool=_SELF_TOOL,
+        kind="callback",
+        outcome="received",
+        detail=f"decision {callback.data} on message {callback.message_id}",
+        message_id=callback.message_id,
+        decision=callback.data,
+    )
+
+
+def _handle_callback(
+    callback: Callback,
+    principal: Principal,
+    *,
+    ledger: Ledger,
+    transport: TelegramTransport,
+    callback_routes: dict[str, CallbackHandler],
+) -> bool:
+    if callback.data in ASK_DECISIONS:
+        if not principal.is_operator:
+            # An `ask` prompt is only ever sent to the operator's chat, so a
+            # decision from anyone else cannot be an answer to one. Recording it
+            # would let a tester resolve the operator's approval.
+            return False
+        _handle_ask_decision(callback, ledger=ledger)
+        transport.answer_callback_query(callback.query_id)
+        return True
+
+    try:
+        reply = dispatch_callback(callback.data, callback_routes, principal)
+    except Exception as exc:  # a handler bug must not kill the daemon
+        print(f"mytelegrambot: callback handling failed, not retried: {describe(exc)}")
+        reply = Reply(f"Something went wrong handling that: {exc}")
+
+    # Answer regardless: an unrouted or failed tap must still stop Telegram's
+    # spinner, or the button looks wedged forever.
+    transport.answer_callback_query(callback.query_id)
+    if reply is None:
+        return False
+    _send(transport, reply, principal)
+    return True
+
+
 def handle_batch(
     updates: list[dict],
     *,
@@ -59,7 +125,9 @@ def handle_batch(
     transport: TelegramTransport,
     authorizer: ChatAuthorizer,
     routes: dict[str, CommandHandler],
+    callback_routes: dict[str, CallbackHandler] | None = None,
 ) -> BatchResult:
+    callback_routes = callback_routes or {}
     routed = 0
     callbacks = 0
     dropped = 0
@@ -72,22 +140,16 @@ def handle_batch(
 
         callback = callback_from_update(update)
         if callback is not None:
-            message_id, decision = callback
-            if not principal.is_operator:
-                # An `ask` prompt is only ever sent to the operator's chat, so a
-                # callback from anyone else cannot be an answer to one. Recording
-                # it would let a tester resolve the operator's approval.
+            if _handle_callback(
+                callback,
+                principal,
+                ledger=ledger,
+                transport=transport,
+                callback_routes=callback_routes,
+            ):
+                callbacks += 1
+            else:
                 dropped += 1
-                continue
-            ledger.record(
-                tool=_SELF_TOOL,
-                kind="callback",
-                outcome="received",
-                detail=f"decision {decision} on message {message_id}",
-                message_id=message_id,
-                decision=decision,
-            )
-            callbacks += 1
             continue
 
         text = text_from_update(update)
@@ -98,18 +160,11 @@ def handle_batch(
             reply = dispatch(text, routes, principal)
         except Exception as exc:  # a handler bug must not kill the daemon
             print(f"mytelegrambot: command handling failed, not retried: {describe(exc)}")
-            reply = f"Something went wrong handling that: {exc}"
+            reply = Reply(f"Something went wrong handling that: {exc}")
         if reply is None:
             continue
         routed += 1
-        try:
-            transport.send_message(reply, chat_id=principal.chat_id)
-        except Exception as exc:
-            # The command's side effects (e.g. an idea already filed on GitHub)
-            # happened inside dispatch() -- a failed reply must not cause this
-            # update to be reprocessed, which would refile it. The cursor still
-            # advances below.
-            print(f"mytelegrambot: reply send failed: {describe(exc)}")
+        _send(transport, reply, principal)
 
     return BatchResult(len(updates), routed, callbacks, dropped)
 
@@ -120,6 +175,7 @@ def run_forever(
     transport: TelegramTransport,
     authorizer: ChatAuthorizer,
     routes: dict[str, CommandHandler],
+    callback_routes: dict[str, CallbackHandler] | None = None,
     long_poll: float = 30.0,
     should_continue: Callable[[], bool] = lambda: True,
 ) -> None:
@@ -140,6 +196,7 @@ def run_forever(
             transport=transport,
             authorizer=authorizer,
             routes=routes,
+            callback_routes=callback_routes,
         )
 
         last_update_id = max(u["update_id"] for u in updates)

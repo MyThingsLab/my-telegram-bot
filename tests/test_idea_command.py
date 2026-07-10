@@ -79,7 +79,7 @@ BRIEF = {
 }
 
 
-def _handle(fake: FakeGh, *, engine, policy, ledger, args_text: str = "a new tool idea") -> str:
+def _reply(fake: FakeGh, *, engine, policy, ledger, args_text: str = "a new tool idea"):
     github = GitHub(repo="o/r", runner=fake)
     return handle_idea(
         args_text,
@@ -90,6 +90,10 @@ def _handle(fake: FakeGh, *, engine, policy, ledger, args_text: str = "a new too
         repo="o/r",
         runner=fake,
     )
+
+
+def _handle(fake: FakeGh, *, engine, policy, ledger, args_text: str = "a new tool idea") -> str:
+    return _reply(fake, engine=engine, policy=policy, ledger=ledger, args_text=args_text).text
 
 
 def test_handle_idea_files_and_explores_in_one_reply(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mytelegrambot.authz import Principal
+from mytelegrambot.router import Reply
 
 # Static, deterministic replies -- no Engine call, no side effects, no args
 # consumed (help ignores whatever follows it). These keep the bot
@@ -14,7 +15,8 @@ _HELP_TEXT = "\n".join(
         "Commands:",
         "  /idea <title>",
         "      File a my-idea issue and get an explored brief back here in",
-        "      chat. Put any extra detail on the lines after the title.",
+        "      chat. Put any extra detail on the lines after the title. Tap the",
+        "      buttons under the reply to explore it again or close it.",
         "  /status",
         "      Show what the bot has done so far (ideas, digests, approvals).",
         "  /help",
@@ -27,5 +29,5 @@ _HELP_TEXT = "\n".join(
 )
 
 
-def help_reply(_args: str, _principal: Principal) -> str:
-    return _HELP_TEXT
+def help_reply(_args: str, _principal: Principal) -> Reply:
+    return Reply(_HELP_TEXT)

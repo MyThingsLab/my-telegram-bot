@@ -58,6 +58,18 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   the environment, never logged, never written to the ledger. The network
   call to the Telegram API is the tool's system boundary (mocked in tests),
   not routed through `Policy` itself.
+- **Buttons are client-supplied input, not trusted state.** `/idea` replies carry
+  an inline keyboard (`Explore deeper` / `Close idea`) whose `callback_data`
+  encodes `idea:<n>:<verb>` (`router.encode_action`, bounded to Telegram's 64
+  bytes). Telegram will deliver *whatever* `callback_data` a client sends for a
+  message it can see, so **the subject is authorized, not just the actor**: a
+  non-operator may only act on an idea their own ledger records them filing
+  (`_may_act_on`). Both verbs are GitHub writes; `Explore deeper` is metered like
+  `/idea` (a button must never be a way around the quota) and `Close idea` passes
+  the same `Policy` seam `file_idea` does, failing closed on `ASK` because the
+  daemon is unattended. Every tap is answered (`answerCallbackQuery`) even when
+  unrouted or failed, or the button spins forever; that answer is cosmetic and
+  must never undo an action that already happened.
 - **One consumer owns the update queue.** `mytelegrambot run` is a long-lived
   daemon (systemd `Type=simple`, `Restart=always`) and its `fetch_updates` is
   the *only* `getUpdates` caller in the tool. `poll_decision` is gone: `ask`
@@ -69,7 +81,11 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   other tools shell out to `mytelegrambot ask`) waits on the ledger for the
   entry carrying its own `message_id`. The ledger is the rendezvous: no
   socket, no new dependency, and the race can no longer be expressed. **Do
-  not reintroduce a second `getUpdates` caller.**
+  not reintroduce a second `getUpdates` caller.** `allow`/`deny` are the only
+  `callback_data` values the daemon never routes to a handler — `policy`
+  exports `ASK_DECISIONS` so the button and the router cannot disagree about
+  what an approval looks like. Handlers return a `router.Reply` (text plus an
+  optional inline keyboard) and never touch the transport themselves.
 - **Authorization is not the transport's job.** `fetch_updates` returns every
   update Telegram sends; `authz.ChatAuthorizer` decides who may be heard.
   The operator (`TELEGRAM_CHAT_ID`) is authorized *by configuration, never by

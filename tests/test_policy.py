@@ -74,7 +74,7 @@ def test_ask_human_happy_path_resolves_allow(tmp_path: Path) -> None:
 
     assert result.decision is Decision.ALLOW
     assert result.outcome == "allowed"
-    assert transport.sent[0][1] == ("Allow", "Deny")
+    assert transport.sent[0][1] == ((("Allow", "allow"), ("Deny", "deny")),)
 
     ask_entry = ledger.read(kind="ask")[0]
     assert ask_entry.outcome == "allowed"
