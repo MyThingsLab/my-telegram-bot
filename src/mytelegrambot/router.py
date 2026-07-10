@@ -4,8 +4,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 # A handler takes the raw text after the leading "/word" and returns the reply
-# to send back. v0 registers exactly one route ("idea" -> handle_idea); adding
-# a second command later is one more dict entry, no change to this module.
+# to send back. Routes are registered in cli.py ("idea", plus the static
+# "help"/"start" meta commands); adding another is one more dict entry, no
+# change to this module.
 CommandHandler = Callable[[str], str]
 
 

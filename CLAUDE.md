@@ -29,7 +29,14 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   path handled by `poll` makes exactly one Engine call, but this tool never
   calls the Engine itself: that call is entirely delegated to MyIdea's own
   already-shipped, already-tested `myidea.explore.explore()`, imported as a
-  library.
+  library. The other `poll` commands stay deterministic, no Engine, no side
+  effects: `/help` and `/start` echo a fixed command list (`help_command.py`);
+  `/status` renders counts read straight from the ledger (`status_command.py`).
+  The `setup` CLI subcommand is a one-off admin call (no ledger, no Engine)
+  that registers the `setMyCommands` menu and the persistent reply keyboard
+  (`menu.py`); the keyboard's labels are literal `/commands` so a tap is just
+  ordinary command text — no `callback_query`, so it sidesteps the shared-offset
+  race entirely (unlike an inline keyboard, which would not).
 - **Dependency-direction exception, deliberate:** every other cross-tool
   relationship in the fleet is a CLI hand-off, not a package dependency (e.g.
   MyPresentation → MyTypster), to keep tool repos decoupled at the code level.

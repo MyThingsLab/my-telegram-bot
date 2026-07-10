@@ -10,11 +10,19 @@ _API = "https://api.telegram.org/bot{token}/{method}"
 
 
 class TelegramTransport(Protocol):
-    def send_message(self, text: str, *, buttons: tuple[str, str] | None = None) -> int: ...
+    def send_message(
+        self,
+        text: str,
+        *,
+        buttons: tuple[str, str] | None = None,
+        keyboard: tuple[tuple[str, ...], ...] | None = None,
+    ) -> int: ...
 
     def poll_decision(self, message_id: int, *, timeout: float) -> str | None: ...
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]: ...
+
+    def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None: ...
 
 
 class HTTPTelegramTransport:
@@ -31,9 +39,16 @@ class HTTPTelegramTransport:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return json.loads(resp.read())
 
-    def send_message(self, text: str, *, buttons: tuple[str, str] | None = None) -> int:
+    def send_message(
+        self,
+        text: str,
+        *,
+        buttons: tuple[str, str] | None = None,
+        keyboard: tuple[tuple[str, ...], ...] | None = None,
+    ) -> int:
         payload: dict = {"chat_id": self._chat_id, "text": text}
         if buttons is not None:
+            # Inline Allow/Deny keyboard: a per-message callback (used by `ask`).
             allow, deny = buttons
             payload["reply_markup"] = {
                 "inline_keyboard": [
@@ -43,8 +58,26 @@ class HTTPTelegramTransport:
                     ]
                 ]
             }
+        elif keyboard is not None:
+            # Persistent reply keyboard: rows of shortcut buttons whose taps
+            # arrive as ordinary text messages (each label is a "/command"), so
+            # they route through the normal command parser -- no callback_query,
+            # no shared-offset race. Telegram keeps it shown until replaced.
+            payload["reply_markup"] = {
+                "keyboard": [[{"text": label} for label in row] for row in keyboard],
+                "resize_keyboard": True,
+                "is_persistent": True,
+            }
         result = self._call("sendMessage", payload)
         return result["result"]["message_id"]
+
+    def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
+        # Registers the bot-wide command list Telegram shows as autocomplete and
+        # in the ☰ menu button. One-off admin call, driven by `mytelegrambot setup`.
+        self._call(
+            "setMyCommands",
+            {"commands": [{"command": name, "description": desc} for name, desc in commands]},
+        )
 
     def poll_decision(self, message_id: int, *, timeout: float) -> str | None:
         deadline = time.monotonic() + timeout

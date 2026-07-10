@@ -33,16 +33,28 @@ class FakeTransport:
     ) -> None:
         self.reply = reply
         self.sent: list[tuple[str, tuple[str, str] | None]] = []
+        self.keyboards: list[tuple[tuple[str, ...], ...] | None] = []
+        self.commands_set: list[tuple[tuple[str, str], ...]] = []
         self.polled: list[tuple[int, float]] = []
         self.fetched: list[tuple[int | None, float]] = []
         self._updates = updates or []
         self._next_id = 1
 
-    def send_message(self, text: str, *, buttons: tuple[str, str] | None = None) -> int:
+    def send_message(
+        self,
+        text: str,
+        *,
+        buttons: tuple[str, str] | None = None,
+        keyboard: tuple[tuple[str, ...], ...] | None = None,
+    ) -> int:
         self.sent.append((text, buttons))
+        self.keyboards.append(keyboard)
         message_id = self._next_id
         self._next_id += 1
         return message_id
+
+    def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
+        self.commands_set.append(commands)
 
     def poll_decision(self, message_id: int, *, timeout: float) -> str | None:
         self.polled.append((message_id, timeout))
@@ -57,7 +69,16 @@ class FakeTransport:
 
 class ErrorTransport:
     # Simulates any Telegram API error on send.
-    def send_message(self, text: str, *, buttons: tuple[str, str] | None = None) -> int:
+    def send_message(
+        self,
+        text: str,
+        *,
+        buttons: tuple[str, str] | None = None,
+        keyboard: tuple[tuple[str, ...], ...] | None = None,
+    ) -> int:
+        raise RuntimeError("telegram API unreachable")
+
+    def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
         raise RuntimeError("telegram API unreachable")
 
     def poll_decision(self, message_id: int, *, timeout: float) -> str | None:

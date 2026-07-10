@@ -112,6 +112,36 @@ def test_send_message_with_buttons_builds_allow_deny_inline_keyboard(
     }
 
 
+def test_send_message_with_keyboard_builds_a_persistent_reply_keyboard(
+    urlopen: _FakeUrlopen,
+) -> None:
+    urlopen.queue({"ok": True, "result": {"message_id": 3}})
+
+    _transport().send_message("menu", keyboard=(("/idea",), ("/status", "/help")))
+
+    _url, payload, _timeout = urlopen.calls[0]
+    assert payload["reply_markup"] == {
+        "keyboard": [[{"text": "/idea"}], [{"text": "/status"}, {"text": "/help"}]],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+def test_set_my_commands_posts_the_command_descriptions(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"ok": True, "result": True})
+
+    _transport().set_my_commands((("idea", "File an idea"), ("help", "Show help")))
+
+    url, payload, _timeout = urlopen.calls[0]
+    assert url == "https://api.telegram.org/botTOKEN/setMyCommands"
+    assert payload == {
+        "commands": [
+            {"command": "idea", "description": "File an idea"},
+            {"command": "help", "description": "Show help"},
+        ]
+    }
+
+
 def test_poll_decision_returns_allow_on_matching_callback(urlopen: _FakeUrlopen) -> None:
     urlopen.queue(
         {

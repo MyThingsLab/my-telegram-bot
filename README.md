@@ -24,12 +24,20 @@ the one exception (see below).
   `ALLOW`.
 - **Poll:** the fleet's one inbound channel — processes pending Telegram
   messages since the last poll (a ledger-tracked `update_id` cursor) through a
-  small command router. v0 registers exactly one command: `/idea <title>`
-  files a `my-idea`-labeled issue and, in the same reply, explores it (one
-  Engine call, entirely delegated to MyIdea's own `file_idea`/`explore`) so
-  the human sees the full brief right in Telegram. Meant to be invoked
-  frequently (e.g. every minute) by a Pi-side cron/systemd timer — polling
-  itself is cheap; only an actual `/idea` message costs an Engine call.
+  small command router. `/idea <title>` files a `my-idea`-labeled issue and,
+  in the same reply, explores it (one Engine call, entirely delegated to
+  MyIdea's own `file_idea`/`explore`) so the human sees the full brief right in
+  Telegram. `/status` reports what the bot has done so far, read straight from
+  the ledger. `/help` (and `/start`, which Telegram auto-sends on first open)
+  reply with a static command list. Everything except `/idea` is deterministic
+  — no Engine call, no side effects. Meant to be invoked frequently (e.g. every
+  minute) by a Pi-side cron/systemd timer — polling itself is cheap; only an
+  actual `/idea` message costs an Engine call.
+- **Setup:** `mytelegrambot setup` is a one-off admin call that registers the
+  command menu (Telegram autocomplete + the ☰ menu button) and shows a
+  persistent reply keyboard of tappable `/command` shortcuts. Taps arrive as
+  ordinary text, so they route through the normal parser — no callback
+  plumbing.
 
 Calls the Telegram Bot API over stdlib `urllib.request` + `json` only — no
 `python-telegram-bot` SDK. `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are read
@@ -38,10 +46,14 @@ from the environment, never logged, never written to the ledger.
 ## Usage
 
 ```bash
+mytelegrambot setup
 mytelegrambot notify [--since ISO8601]
 mytelegrambot ask --action-kind <kind> --payload-json <json> [--timeout 300]
 mytelegrambot poll [--repo owner/name] [--engine claude-cli|noop]
 ```
+
+`poll` is run once a minute by a systemd timer on the Pi — see
+[`deploy/systemd/`](deploy/systemd/) for the unit files and install steps.
 
 Primarily consumed as a library (`TelegramPolicy` wrapping another `Policy`)
 inside another tool's runtime — the CLI above is for manual/CI-script use.

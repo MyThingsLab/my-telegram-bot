@@ -11,10 +11,13 @@ from mythings.github import GitHub
 from mythings.ledger import Ledger
 from mythings.policy import Action, Decision
 
+from mytelegrambot.help_command import help_reply
 from mytelegrambot.idea_command import DEFAULT_IDEA_REPO, handle_idea
 from mytelegrambot.inbound import poll_once
+from mytelegrambot.menu import COMMAND_MENU, REPLY_KEYBOARD, SETUP_GREETING
 from mytelegrambot.notifier import notify
 from mytelegrambot.policy import ask_human
+from mytelegrambot.status_command import build_status
 from mytelegrambot.transport import HTTPTelegramTransport
 
 _ENGINES: dict[str, type[Engine]] = {"noop": NoopEngine, "claude-cli": ClaudeCLIEngine}
@@ -55,9 +58,22 @@ def main(argv: list[str] | None = None) -> int:
     poll.add_argument("--get-updates-timeout", type=float, default=1.0)
     poll.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
 
+    sub.add_parser(
+        "setup", help="register the command menu and persistent reply keyboard with Telegram"
+    )
+
     args = parser.parse_args(argv)
-    ledger = Ledger(args.ledger)
     transport = _transport()
+
+    if args.cmd == "setup":
+        # One-off admin call: no ledger, no Engine -- just tells Telegram what
+        # commands to advertise and shows the persistent shortcut keyboard.
+        transport.set_my_commands(COMMAND_MENU)
+        transport.send_message(SETUP_GREETING, keyboard=REPLY_KEYBOARD)
+        print(f"setup: registered {len(COMMAND_MENU)} commands and the reply keyboard")
+        return 0
+
+    ledger = Ledger(args.ledger)
 
     if args.cmd == "notify":
         result = notify(ledger, transport=transport, since=args.since)
@@ -72,7 +88,15 @@ def main(argv: list[str] | None = None) -> int:
         routes = {
             "idea": lambda text: handle_idea(
                 text, github=github, policy=guard, engine=engine, ledger=ledger, repo=repo
-            )
+            ),
+            # Deterministic, no-Engine health snapshot read straight from the
+            # ledger (ignores any args after /status).
+            "status": lambda _text: build_status(ledger),
+            # Static, no-Engine meta commands so a human opening the chat can
+            # discover what the bot does. Telegram auto-sends /start on first
+            # open; both map to the same help body.
+            "help": help_reply,
+            "start": help_reply,
         }
         poll_result = poll_once(
             ledger=ledger,
