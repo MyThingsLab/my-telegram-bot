@@ -140,6 +140,62 @@ def test_poll_routes_an_idea_command_through_the_wired_handler(
     assert transport.sent == [("ok reply", None)]
 
 
+def test_poll_answers_help_with_the_command_list(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    transport = FakeTransport(updates=[message_update(1, "/help")])
+    _use_transport(monkeypatch, transport)
+
+    code = cli.main(["poll", "--engine", "noop", "--ledger", str(ledger_path)])
+
+    assert code == 0
+    assert len(transport.sent) == 1
+    assert "/idea" in transport.sent[0][0]
+
+
+def test_poll_answers_start_with_the_same_help_body(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    # Telegram sends /start automatically the first time a human opens the bot.
+    transport = FakeTransport(updates=[message_update(1, "/start")])
+    _use_transport(monkeypatch, transport)
+
+    code = cli.main(["poll", "--engine", "noop", "--ledger", str(ledger_path)])
+
+    assert code == 0
+    assert "/idea" in transport.sent[0][0]
+
+
+def test_poll_answers_status_from_the_ledger(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    Ledger(ledger_path).record("myidea", "idea_filed", "success", detail="filed idea #1: x")
+    transport = FakeTransport(updates=[message_update(1, "/status")])
+    _use_transport(monkeypatch, transport)
+
+    code = cli.main(["poll", "--engine", "noop", "--ledger", str(ledger_path)])
+
+    assert code == 0
+    assert "Ideas filed via chat: 1" in transport.sent[0][0]
+
+
+def test_setup_registers_the_command_menu_and_keyboard(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    transport = FakeTransport()
+    _use_transport(monkeypatch, transport)
+
+    code = cli.main(["setup"])
+
+    assert code == 0
+    # Registered the ☰ menu and pushed one greeting carrying the reply keyboard.
+    assert len(transport.commands_set) == 1
+    registered = {name for name, _desc in transport.commands_set[0]}
+    assert {"idea", "status", "help"} <= registered
+    assert transport.keyboards[-1] == (("/idea",), ("/status", "/help"))
+    assert "registered" in capsys.readouterr().out
+
+
 def test_poll_repo_flag_overrides_the_default(
     monkeypatch: pytest.MonkeyPatch, ledger_path: Path
 ) -> None:
