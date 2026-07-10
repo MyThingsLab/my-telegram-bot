@@ -52,6 +52,7 @@ The unit deliberately ships **without** `--testers-db`, so only the operator's
 chat is heard. To let someone else in:
 
 ```bash
+mytelegrambot testers pending                                  # who has messaged the bot?
 mytelegrambot testers add ada --chat-id 123456789 --quota 20   # prints a token once
 sudo systemctl edit mytelegrambot.service   # append --testers-db .mythings/testers.db to ExecStart
 sudo systemctl restart mytelegrambot.service

@@ -51,6 +51,11 @@ the one exception (see below).
   and the refusal is the default), replies go back to their own chat, and their
   activity lands in their own ledger — never the operator's digest. Revoking
   access is one flag: `mytelegrambot testers disable <id>`.
+
+  To find a prospective tester's chat id, have them message the bot once, then
+  run `mytelegrambot testers pending` — an unrecognized chat still gets no reply
+  and no ack, but the knock is recorded locally (deduplicated, and capped so it
+  cannot become a spam sink) and printed with a ready-to-paste `testers add`.
 - **Setup:** `mytelegrambot setup` is a one-off admin call that registers the
   command menu (Telegram autocomplete + the ☰ menu button) and shows a
   persistent reply keyboard of tappable `/command` shortcuts. Taps arrive as
@@ -68,6 +73,7 @@ mytelegrambot setup
 mytelegrambot notify [--since ISO8601]
 mytelegrambot ask --action-kind <kind> --payload-json <json> [--timeout 300]
 mytelegrambot run [--repo owner/name] [--engine claude-cli|noop] [--testers-db PATH]
+mytelegrambot testers pending
 mytelegrambot testers add <handle> --chat-id <id> --quota <n>
 mytelegrambot testers disable <id>
 ```

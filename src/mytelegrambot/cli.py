@@ -23,6 +23,8 @@ from mytelegrambot.idea_command import (
 from mytelegrambot.inbound import run_forever
 from mytelegrambot.menu import COMMAND_MENU, REPLY_KEYBOARD, SETUP_GREETING
 from mytelegrambot.notifier import notify
+from mytelegrambot.pending import PendingChats
+from mytelegrambot.pending import pending as pending_chats
 from mytelegrambot.policy import ask_human
 from mytelegrambot.router import CallbackAction, CallbackHandler, CommandHandler, Reply
 from mytelegrambot.status_command import build_status
@@ -100,6 +102,21 @@ def build_callback_routes(
 
 
 def _testers_command(args: argparse.Namespace) -> int:
+    if args.testers_cmd == "pending":
+        store = TesterStore(args.db) if args.db.exists() else None
+        waiting = pending_chats(Ledger(args.ledger), store)
+        if not waiting:
+            print("no unregistered chats have contacted the bot")
+            return 0
+        print(f"{len(waiting)} chat(s) waiting to be registered:\n")
+        for knock in waiting:
+            print(f"  chat {knock.chat_id}  first seen {knock.first_seen}")
+            print(
+                f"    mytelegrambot testers --db {args.db} add <handle> "
+                f"--chat-id {knock.chat_id} --quota 5"
+            )
+        return 0
+
     store = TesterStore(args.db)
     if args.testers_cmd == "add":
         tester, token = store.register(args.handle, engine_quota=args.quota, chat_id=args.chat_id)
@@ -154,7 +171,9 @@ def main(argv: list[str] | None = None) -> int:
 
     testers = sub.add_parser("testers", help="manage who, besides the operator, may use the bot")
     testers.add_argument("--db", type=Path, default=_DEFAULT_TESTERS_DB)
+    testers.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
     tsub = testers.add_subparsers(dest="testers_cmd", required=True)
+    tsub.add_parser("pending", help="list unregistered chats that have contacted the bot")
     add = tsub.add_parser("add", help="register a tester and print their token once")
     add.add_argument("handle")
     add.add_argument("--chat-id", type=int, required=True)
@@ -211,6 +230,9 @@ def main(argv: list[str] | None = None) -> int:
             authorizer=authorizer,
             routes=build_routes(**wiring),
             callback_routes=build_callback_routes(**wiring),
+            # Recorded regardless of --testers-db: you have to see who knocked
+            # before you have anyone to put in a database.
+            pending=PendingChats(ledger),
             long_poll=args.long_poll,
         )
         return 0

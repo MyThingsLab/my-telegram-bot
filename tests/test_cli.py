@@ -9,6 +9,7 @@ from mythings.testers import TesterStore
 
 from conftest import ErrorTransport, FakeTransport, entry, operator
 from mytelegrambot import cli
+from mytelegrambot.pending import PendingChats
 from mytelegrambot.router import CallbackAction, Reply
 from mytelegrambot.transport import HTTPTelegramTransport
 
@@ -328,3 +329,61 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
     assert callback_routes["idea:close"](CallbackAction("idea:close", 12), who).text == "closed"
     assert seen["explore"] == (12, "o/r")
     assert seen["close"] == (12, "o/r")
+
+
+def test_testers_pending_lists_knocks_with_a_ready_to_paste_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger_file = tmp_path / "l.jsonl"
+    PendingChats(Ledger(ledger_file)).record("555")
+    db = tmp_path / "t.db"
+
+    code = cli.main(["testers", "--db", str(db), "--ledger", str(ledger_file), "pending"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "chat 555" in out
+    assert "--chat-id 555" in out  # paste-able registration command
+
+
+def test_testers_pending_says_so_when_nobody_has_knocked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(
+        [
+            "testers",
+            "--db",
+            str(tmp_path / "t.db"),
+            "--ledger",
+            str(tmp_path / "l.jsonl"),
+            "pending",
+        ]
+    )
+
+    assert code == 0
+    assert "no unregistered chats" in capsys.readouterr().out
+
+
+def test_testers_pending_hides_an_already_registered_chat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ledger_file = tmp_path / "l.jsonl"
+    PendingChats(Ledger(ledger_file)).record("555")
+    db = tmp_path / "t.db"
+    TesterStore(db).register("ada", engine_quota=5, chat_id=555)
+
+    cli.main(["testers", "--db", str(db), "--ledger", str(ledger_file), "pending"])
+
+    assert "no unregistered chats" in capsys.readouterr().out
+
+
+def test_run_records_knocks_even_without_a_testers_db(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    # You have to see who knocked before you have anyone to put in a database.
+    captured = _captured_run(monkeypatch)
+    _use_transport(monkeypatch, FakeTransport())
+
+    cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
+
+    assert captured["pending"] is not None

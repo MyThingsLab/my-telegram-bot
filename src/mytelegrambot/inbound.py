@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from mythings.ledger import Ledger
 
 from mytelegrambot.authz import ChatAuthorizer, Principal
+from mytelegrambot.pending import PendingChats
 from mytelegrambot.policy import ASK_DECISIONS
 from mytelegrambot.router import (
     CallbackHandler,
@@ -126,6 +127,7 @@ def handle_batch(
     authorizer: ChatAuthorizer,
     routes: dict[str, CommandHandler],
     callback_routes: dict[str, CallbackHandler] | None = None,
+    pending: PendingChats | None = None,
 ) -> BatchResult:
     callback_routes = callback_routes or {}
     routed = 0
@@ -133,8 +135,13 @@ def handle_batch(
     dropped = 0
 
     for update in updates:
-        principal = authorizer.authorize(chat_id_of(update))
+        chat_id = chat_id_of(update)
+        principal = authorizer.authorize(chat_id)
         if principal is None:
+            # Still silent to *them* -- no reply, no ack. The knock is recorded
+            # locally so the operator can see who is waiting to be registered.
+            if pending is not None and chat_id is not None:
+                pending.record(chat_id)
             dropped += 1
             continue
 
@@ -176,6 +183,7 @@ def run_forever(
     authorizer: ChatAuthorizer,
     routes: dict[str, CommandHandler],
     callback_routes: dict[str, CallbackHandler] | None = None,
+    pending: PendingChats | None = None,
     long_poll: float = 30.0,
     should_continue: Callable[[], bool] = lambda: True,
 ) -> None:
@@ -197,6 +205,7 @@ def run_forever(
             authorizer=authorizer,
             routes=routes,
             callback_routes=callback_routes,
+            pending=pending,
         )
 
         last_update_id = max(u["update_id"] for u in updates)
