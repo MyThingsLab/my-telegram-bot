@@ -10,6 +10,7 @@ from mytelegrambot.transport import (
     HTTPTelegramTransport,
     _decision_from_update,
     describe,
+    text_from_update,
 )
 
 
@@ -210,6 +211,93 @@ def test_decision_from_update_rejects_wrong_message_id() -> None:
 def test_decision_from_update_rejects_unknown_callback_data() -> None:
     update = {"callback_query": {"message": {"message_id": 3}, "data": "maybe"}}
     assert _decision_from_update(update, 3) is None
+
+
+def test_fetch_updates_returns_updates_for_the_configured_chat(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue(
+        {
+            "ok": True,
+            "result": [
+                {"update_id": 1, "message": {"chat": {"id": "CHAT"}, "text": "/idea x"}},
+            ],
+        }
+    )
+
+    updates = _transport().fetch_updates(offset=None, timeout=1)
+
+    assert len(updates) == 1
+    assert updates[0]["update_id"] == 1
+    url, payload, sock_timeout = urlopen.calls[0]
+    assert url == "https://api.telegram.org/botTOKEN/getUpdates"
+    assert "offset" not in payload
+    assert sock_timeout is not None and sock_timeout > 1
+
+
+def test_fetch_updates_passes_offset_when_given(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"ok": True, "result": []})
+
+    _transport().fetch_updates(offset=42, timeout=1)
+
+    _url, payload, _timeout = urlopen.calls[0]
+    assert payload["offset"] == 42
+
+
+def test_fetch_updates_drops_updates_from_a_different_chat(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue(
+        {
+            "ok": True,
+            "result": [
+                {"update_id": 1, "message": {"chat": {"id": "OTHER"}, "text": "hi"}},
+                {"update_id": 2, "message": {"chat": {"id": "CHAT"}, "text": "mine"}},
+            ],
+        }
+    )
+
+    updates = _transport().fetch_updates(offset=None, timeout=1)
+
+    assert [u["update_id"] for u in updates] == [2]
+
+
+def test_fetch_updates_keeps_callback_query_updates_for_the_configured_chat(
+    urlopen: _FakeUrlopen,
+) -> None:
+    urlopen.queue(
+        {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 1,
+                    "callback_query": {
+                        "data": "allow",
+                        "message": {"message_id": 9, "chat": {"id": "CHAT"}},
+                    },
+                }
+            ],
+        }
+    )
+
+    updates = _transport().fetch_updates(offset=None, timeout=1)
+
+    assert len(updates) == 1
+
+
+def test_fetch_updates_returns_empty_list_on_network_error(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue(urllib.error.URLError("connection refused"))
+
+    assert _transport().fetch_updates(offset=None, timeout=1) == []
+
+
+def test_text_from_update_extracts_plain_message_text() -> None:
+    update = {"update_id": 1, "message": {"chat": {"id": "CHAT"}, "text": "/idea x"}}
+    assert text_from_update(update) == "/idea x"
+
+
+def test_text_from_update_returns_none_for_callback_query() -> None:
+    update = {
+        "update_id": 1,
+        "callback_query": {"data": "allow", "message": {"message_id": 9}},
+    }
+    assert text_from_update(update) is None
 
 
 def test_describe_includes_http_error_body() -> None:
