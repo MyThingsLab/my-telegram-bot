@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 import urllib.error
 import urllib.request
 from typing import Protocol
@@ -14,11 +13,10 @@ class TelegramTransport(Protocol):
         self,
         text: str,
         *,
+        chat_id: str | None = None,
         buttons: tuple[str, str] | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
     ) -> int: ...
-
-    def poll_decision(self, message_id: int, *, timeout: float) -> str | None: ...
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]: ...
 
@@ -28,14 +26,16 @@ class TelegramTransport(Protocol):
 class HTTPTelegramTransport:
     def __init__(self, bot_token: str, chat_id: str) -> None:
         self._token = bot_token
+        # The operator's chat: where unaddressed output (notify digests, ask
+        # prompts) goes. Inbound updates may now come from other chats too, so
+        # this is a default recipient, not a filter -- who may talk to the bot
+        # is an authorization question, answered in `authz`.
         self._chat_id = chat_id
 
     def _call(self, method: str, payload: dict, *, timeout: float = 10) -> dict:
         url = _API.format(token=self._token, method=method)
         data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
-        )
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return json.loads(resp.read())
 
@@ -43,10 +43,11 @@ class HTTPTelegramTransport:
         self,
         text: str,
         *,
+        chat_id: str | None = None,
         buttons: tuple[str, str] | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
     ) -> int:
-        payload: dict = {"chat_id": self._chat_id, "text": text}
+        payload: dict = {"chat_id": chat_id or self._chat_id, "text": text}
         if buttons is not None:
             # Inline Allow/Deny keyboard: a per-message callback (used by `ask`).
             allow, deny = buttons
@@ -61,8 +62,8 @@ class HTTPTelegramTransport:
         elif keyboard is not None:
             # Persistent reply keyboard: rows of shortcut buttons whose taps
             # arrive as ordinary text messages (each label is a "/command"), so
-            # they route through the normal command parser -- no callback_query,
-            # no shared-offset race. Telegram keeps it shown until replaced.
+            # they route through the normal command parser. Telegram keeps it
+            # shown until replaced.
             payload["reply_markup"] = {
                 "keyboard": [[{"text": label} for label in row] for row in keyboard],
                 "resize_keyboard": True,
@@ -79,52 +80,25 @@ class HTTPTelegramTransport:
             {"commands": [{"command": name, "description": desc} for name, desc in commands]},
         )
 
-    def poll_decision(self, message_id: int, *, timeout: float) -> str | None:
-        deadline = time.monotonic() + timeout
-        offset: int | None = None
-        while time.monotonic() < deadline:
-            long_poll = max(1, min(30, int(deadline - time.monotonic())))
-            params = {"timeout": long_poll}
-            if offset is not None:
-                params["offset"] = offset
-            try:
-                # Telegram holds the connection open for up to long_poll seconds
-                # server-side; the client socket timeout must exceed that or we
-                # give up before Telegram ever gets to respond.
-                result = self._call("getUpdates", params, timeout=long_poll + 10)
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
-                print(f"mytelegrambot: getUpdates failed, failing closed: {describe(exc)}")
-                return None
-            for update in result.get("result", []):
-                offset = update["update_id"] + 1
-                decision = _decision_from_update(update, message_id)
-                if decision is not None:
-                    return decision
-        return None
-
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]:
-        # One getUpdates call, not a deadline loop (unlike poll_decision, which
-        # waits for a specific reply). Meant to be called by a short-lived,
-        # periodically-scheduled `poll` invocation, not a persistent daemon.
+        # The *only* getUpdates caller in the tool. `poll_decision` used to be a
+        # second one, racing this for the same bot-token-wide offset queue; the
+        # daemon now owns the offset outright and routes callbacks by message_id,
+        # so that race can no longer be expressed.
+        #
+        # No chat filtering here: this returns whatever Telegram sends.
         params: dict = {"timeout": timeout}
         if offset is not None:
             params["offset"] = offset
         try:
+            # Telegram holds the connection open for up to `timeout` seconds
+            # server-side; the client socket timeout must exceed that, or we give
+            # up before Telegram ever gets to respond.
             result = self._call("getUpdates", params, timeout=timeout + 10)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            print(f"mytelegrambot: getUpdates failed, will retry next poll: {describe(exc)}")
+            print(f"mytelegrambot: getUpdates failed, will retry: {describe(exc)}")
             return []
-        # Inbound free text is a new attack surface (unlike poll_decision, which
-        # only ever replies to a button on a message only the intended
-        # recipient could see) -- silently drop anything not addressed to this
-        # bot's single configured chat, so the tool stays single-user by
-        # construction even for this new capability.
-        return [u for u in result.get("result", []) if _belongs_to_chat(u, self._chat_id)]
-
-
-def _belongs_to_chat(update: dict, chat_id: str) -> bool:
-    message = update.get("message") or update.get("callback_query", {}).get("message", {})
-    return str(message.get("chat", {}).get("id", "")) == str(chat_id)
+        return list(result.get("result", []))
 
 
 def describe(exc: Exception) -> str:
@@ -133,14 +107,10 @@ def describe(exc: Exception) -> str:
     return repr(exc)
 
 
-def _decision_from_update(update: dict, message_id: int) -> str | None:
-    callback = update.get("callback_query")
-    if not callback:
-        return None
-    if callback.get("message", {}).get("message_id") != message_id:
-        return None
-    data = callback.get("data")
-    return data if data in ("allow", "deny") else None
+def chat_id_of(update: dict) -> str | None:
+    message = update.get("message") or update.get("callback_query", {}).get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    return None if chat_id is None else str(chat_id)
 
 
 def text_from_update(update: dict) -> str | None:
@@ -150,3 +120,14 @@ def text_from_update(update: dict) -> str | None:
     if not message or "text" not in message:
         return None
     return str(message["text"])
+
+
+def callback_from_update(update: dict) -> tuple[int, str] | None:
+    callback = update.get("callback_query")
+    if not callback:
+        return None
+    message_id = callback.get("message", {}).get("message_id")
+    data = callback.get("data")
+    if message_id is None or data not in ("allow", "deny"):
+        return None
+    return int(message_id), data

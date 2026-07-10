@@ -10,7 +10,7 @@ unattended runner.
 ## How it works
 
 `notify`/`ask` are deterministic, no Engine call — pure comms/plumbing that
-only relays existing `Action`/`Ledger` data, never composes prose. `poll` is
+only relays existing `Action`/`Ledger` data, never composes prose. `/idea` is
 the one exception (see below).
 
 - **Notify:** reads the shared `Ledger`'s entries since this tool's own last
@@ -22,17 +22,28 @@ the one exception (see below).
   reply — resolving to the human's answer. **Fail-closed is non-negotiable:**
   on timeout, no reply, or any Telegram API error, it resolves `DENY`, never
   `ALLOW`.
-- **Poll:** the fleet's one inbound channel — processes pending Telegram
-  messages since the last poll (a ledger-tracked `update_id` cursor) through a
-  small command router. `/idea <title>` files a `my-idea`-labeled issue and,
-  in the same reply, explores it (one Engine call, entirely delegated to
-  MyIdea's own `file_idea`/`explore`) so the human sees the full brief right in
-  Telegram. `/status` reports what the bot has done so far, read straight from
-  the ledger. `/help` (and `/start`, which Telegram auto-sends on first open)
-  reply with a static command list. Everything except `/idea` is deterministic
-  — no Engine call, no side effects. Meant to be invoked frequently (e.g. every
-  minute) by a Pi-side cron/systemd timer — polling itself is cheap; only an
-  actual `/idea` message costs an Engine call.
+- **Run:** the fleet's one inbound channel, and the single owner of Telegram's
+  update queue. `mytelegrambot run` is a long-lived daemon that long-polls
+  `getUpdates`, resumes from a ledger-tracked `update_id` cursor, and routes
+  each update: text through a small command router, `callback_query` into a
+  `kind=callback` ledger entry that a waiting `ask` process picks up. Because
+  it is the only `getUpdates` caller, a concurrent `ask` and an inbound command
+  can no longer steal each other's updates.
+
+  `/idea <title>` files a `my-idea`-labeled issue and, in the same reply,
+  explores it (one Engine call, entirely delegated to MyIdea's own
+  `file_idea`/`explore`) so you see the full brief right in Telegram.
+  `/status` reports what the bot has done so far, read straight from the
+  ledger. `/help` (and `/start`, which Telegram auto-sends on first open) reply
+  with a static command list. Everything except `/idea` is deterministic — no
+  Engine call, no side effects.
+- **Testers:** by default only the operator's chat (`TELEGRAM_CHAT_ID`) is
+  heard; every other chat is dropped silently. Point `run --testers-db` at a
+  `mythings.testers` database to admit registered testers. Each tester gets a
+  hard, fail-closed quota of Engine calls (`/idea` reserves before it spends,
+  and the refusal is the default), replies go back to their own chat, and their
+  activity lands in their own ledger — never the operator's digest. Revoking
+  access is one flag: `mytelegrambot testers disable <id>`.
 - **Setup:** `mytelegrambot setup` is a one-off admin call that registers the
   command menu (Telegram autocomplete + the ☰ menu button) and shows a
   persistent reply keyboard of tappable `/command` shortcuts. Taps arrive as
@@ -49,11 +60,14 @@ from the environment, never logged, never written to the ledger.
 mytelegrambot setup
 mytelegrambot notify [--since ISO8601]
 mytelegrambot ask --action-kind <kind> --payload-json <json> [--timeout 300]
-mytelegrambot poll [--repo owner/name] [--engine claude-cli|noop]
+mytelegrambot run [--repo owner/name] [--engine claude-cli|noop] [--testers-db PATH]
+mytelegrambot testers add <handle> --chat-id <id> --quota <n>
+mytelegrambot testers disable <id>
 ```
 
-`poll` is run once a minute by a systemd timer on the Pi — see
-[`deploy/systemd/`](deploy/systemd/) for the unit files and install steps.
+`run` is a long-lived systemd service on the Pi — see
+[`deploy/systemd/`](deploy/systemd/) for the unit file and install steps.
+`testers add` prints the tester's token exactly once; only its sha256 is stored.
 
 Primarily consumed as a library (`TelegramPolicy` wrapping another `Policy`)
 inside another tool's runtime — the CLI above is for manual/CI-script use.

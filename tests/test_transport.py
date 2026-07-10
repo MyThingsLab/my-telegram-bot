@@ -8,7 +8,8 @@ import pytest
 from mytelegrambot import transport as t
 from mytelegrambot.transport import (
     HTTPTelegramTransport,
-    _decision_from_update,
+    callback_from_update,
+    chat_id_of,
     describe,
     text_from_update,
 )
@@ -31,11 +32,7 @@ class _FakeResponse:
 class _FakeUrlopen:
     # Stands in for the one real system boundary: the Telegram HTTP call. Each
     # queued item is either a response payload (dict) or an exception to raise.
-    # Advancing the clock per call lets poll_decision's deadline loop terminate
-    # deterministically without real time passing.
-    def __init__(self, clock: _Clock, *, advance_per_call: float = 0.0) -> None:
-        self._clock = clock
-        self._advance = advance_per_call
+    def __init__(self) -> None:
         self._queue: list[dict | Exception] = []
         self.calls: list[tuple[str, dict, float | None]] = []
 
@@ -45,7 +42,6 @@ class _FakeUrlopen:
     def __call__(self, req: object, timeout: float | None = None) -> _FakeResponse:
         payload = json.loads(req.data.decode("utf-8"))  # type: ignore[attr-defined]
         self.calls.append((req.full_url, payload, timeout))  # type: ignore[attr-defined]
-        self._clock.advance(self._advance)
         if not self._queue:
             raise AssertionError("urlopen called more times than responses were queued")
         item = self._queue.pop(0)
@@ -54,27 +50,9 @@ class _FakeUrlopen:
         return _FakeResponse(item)
 
 
-class _Clock:
-    def __init__(self, start: float = 0.0) -> None:
-        self.t = start
-
-    def __call__(self) -> float:
-        return self.t
-
-    def advance(self, dt: float) -> None:
-        self.t += dt
-
-
 @pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
-    c = _Clock()
-    monkeypatch.setattr(t.time, "monotonic", c)
-    return c
-
-
-@pytest.fixture
-def urlopen(monkeypatch: pytest.MonkeyPatch, clock: _Clock) -> _FakeUrlopen:
-    fake = _FakeUrlopen(clock)
+def urlopen(monkeypatch: pytest.MonkeyPatch) -> _FakeUrlopen:
+    fake = _FakeUrlopen()
     monkeypatch.setattr(t.urllib.request, "urlopen", fake)
     return fake
 
@@ -92,6 +70,15 @@ def test_send_message_posts_text_to_the_right_url_and_returns_id(urlopen: _FakeU
     url, payload, _timeout = urlopen.calls[0]
     assert url == "https://api.telegram.org/botTOKEN/sendMessage"
     assert payload == {"chat_id": "CHAT", "text": "hello"}
+
+
+def test_send_message_addresses_an_explicit_chat(urlopen: _FakeUrlopen) -> None:
+    # A tester's reply must go back to the tester, not to the operator.
+    urlopen.queue({"ok": True, "result": {"message_id": 1}})
+
+    _transport().send_message("your brief", chat_id="999")
+
+    assert urlopen.calls[0][1]["chat_id"] == "999"
 
 
 def test_send_message_with_buttons_builds_allow_deny_inline_keyboard(
@@ -142,137 +129,9 @@ def test_set_my_commands_posts_the_command_descriptions(urlopen: _FakeUrlopen) -
     }
 
 
-def test_poll_decision_returns_allow_on_matching_callback(urlopen: _FakeUrlopen) -> None:
-    urlopen.queue(
-        {
-            "ok": True,
-            "result": [
-                {
-                    "update_id": 100,
-                    "callback_query": {"message": {"message_id": 9}, "data": "allow"},
-                }
-            ],
-        }
-    )
-
-    assert _transport().poll_decision(9, timeout=5) == "allow"
-    url, _payload, sock_timeout = urlopen.calls[0]
-    assert url == "https://api.telegram.org/botTOKEN/getUpdates"
-    assert sock_timeout is not None and sock_timeout > 5  # exceeds the long-poll window
-
-
-def test_poll_decision_ignores_callback_for_a_different_message(
-    urlopen: _FakeUrlopen, clock: _Clock
-) -> None:
-    urlopen._advance = 10  # one poll, then the deadline is blown
-    urlopen.queue(
-        {
-            "ok": True,
-            "result": [
-                {
-                    "update_id": 100,
-                    "callback_query": {"message": {"message_id": 999}, "data": "allow"},
-                }
-            ],
-        }
-    )
-
-    assert _transport().poll_decision(9, timeout=5) is None
-
-
-def test_poll_decision_advances_offset_past_already_seen_updates(
-    urlopen: _FakeUrlopen,
-) -> None:
-    urlopen._advance = 1  # keep the deadline far off so a second poll happens
-    urlopen.queue(
-        {"ok": True, "result": [{"update_id": 5, "message": {"text": "not a callback"}}]},
-        {
-            "ok": True,
-            "result": [
-                {
-                    "update_id": 6,
-                    "callback_query": {"message": {"message_id": 9}, "data": "deny"},
-                }
-            ],
-        },
-    )
-
-    assert _transport().poll_decision(9, timeout=30) == "deny"
-    assert "offset" not in urlopen.calls[0][1]  # first poll has no offset
-    assert urlopen.calls[1][1]["offset"] == 6  # second poll confirms update_id 5
-
-
-def test_poll_decision_fails_closed_on_network_error(urlopen: _FakeUrlopen) -> None:
-    urlopen.queue(urllib.error.URLError("connection refused"))
-
-    assert _transport().poll_decision(9, timeout=5) is None
-
-
-def test_poll_decision_fails_closed_on_socket_timeout(urlopen: _FakeUrlopen) -> None:
-    urlopen.queue(TimeoutError("read timed out"))
-
-    assert _transport().poll_decision(9, timeout=5) is None
-
-
-def test_poll_decision_returns_none_when_deadline_passes_with_no_reply(
-    urlopen: _FakeUrlopen,
-) -> None:
-    urlopen._advance = 10
-    urlopen.queue({"ok": True, "result": []})
-
-    assert _transport().poll_decision(9, timeout=5) is None
-
-
-def test_decision_from_update_accepts_allow_and_deny() -> None:
-    for value in ("allow", "deny"):
-        update = {"callback_query": {"message": {"message_id": 3}, "data": value}}
-        assert _decision_from_update(update, 3) == value
-
-
-def test_decision_from_update_rejects_non_callback_updates() -> None:
-    assert _decision_from_update({"message": {"text": "hi"}}, 3) is None
-
-
-def test_decision_from_update_rejects_wrong_message_id() -> None:
-    update = {"callback_query": {"message": {"message_id": 4}, "data": "allow"}}
-    assert _decision_from_update(update, 3) is None
-
-
-def test_decision_from_update_rejects_unknown_callback_data() -> None:
-    update = {"callback_query": {"message": {"message_id": 3}, "data": "maybe"}}
-    assert _decision_from_update(update, 3) is None
-
-
-def test_fetch_updates_returns_updates_for_the_configured_chat(urlopen: _FakeUrlopen) -> None:
-    urlopen.queue(
-        {
-            "ok": True,
-            "result": [
-                {"update_id": 1, "message": {"chat": {"id": "CHAT"}, "text": "/idea x"}},
-            ],
-        }
-    )
-
-    updates = _transport().fetch_updates(offset=None, timeout=1)
-
-    assert len(updates) == 1
-    assert updates[0]["update_id"] == 1
-    url, payload, sock_timeout = urlopen.calls[0]
-    assert url == "https://api.telegram.org/botTOKEN/getUpdates"
-    assert "offset" not in payload
-    assert sock_timeout is not None and sock_timeout > 1
-
-
-def test_fetch_updates_passes_offset_when_given(urlopen: _FakeUrlopen) -> None:
-    urlopen.queue({"ok": True, "result": []})
-
-    _transport().fetch_updates(offset=42, timeout=1)
-
-    _url, payload, _timeout = urlopen.calls[0]
-    assert payload["offset"] == 42
-
-
-def test_fetch_updates_drops_updates_from_a_different_chat(urlopen: _FakeUrlopen) -> None:
+def test_fetch_updates_returns_every_update_unfiltered(urlopen: _FakeUrlopen) -> None:
+    # Chat filtering used to live here. It is now an authorization decision made
+    # by ChatAuthorizer, so the transport hands back whatever Telegram sent.
     urlopen.queue(
         {
             "ok": True,
@@ -285,36 +144,61 @@ def test_fetch_updates_drops_updates_from_a_different_chat(urlopen: _FakeUrlopen
 
     updates = _transport().fetch_updates(offset=None, timeout=1)
 
-    assert [u["update_id"] for u in updates] == [2]
+    assert [u["update_id"] for u in updates] == [1, 2]
+    url, payload, sock_timeout = urlopen.calls[0]
+    assert url == "https://api.telegram.org/botTOKEN/getUpdates"
+    assert "offset" not in payload
+    # The client socket must outlive Telegram's server-side long poll.
+    assert sock_timeout is not None and sock_timeout > 1
 
 
-def test_fetch_updates_keeps_callback_query_updates_for_the_configured_chat(
-    urlopen: _FakeUrlopen,
-) -> None:
-    urlopen.queue(
-        {
-            "ok": True,
-            "result": [
-                {
-                    "update_id": 1,
-                    "callback_query": {
-                        "data": "allow",
-                        "message": {"message_id": 9, "chat": {"id": "CHAT"}},
-                    },
-                }
-            ],
-        }
-    )
+def test_fetch_updates_passes_offset_when_given(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"ok": True, "result": []})
 
-    updates = _transport().fetch_updates(offset=None, timeout=1)
+    _transport().fetch_updates(offset=42, timeout=1)
 
-    assert len(updates) == 1
+    _url, payload, _timeout = urlopen.calls[0]
+    assert payload["offset"] == 42
 
 
 def test_fetch_updates_returns_empty_list_on_network_error(urlopen: _FakeUrlopen) -> None:
     urlopen.queue(urllib.error.URLError("connection refused"))
 
     assert _transport().fetch_updates(offset=None, timeout=1) == []
+
+
+def test_fetch_updates_returns_empty_list_on_socket_timeout(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue(TimeoutError("read timed out"))
+
+    assert _transport().fetch_updates(offset=None, timeout=1) == []
+
+
+def test_chat_id_of_reads_message_and_callback_updates() -> None:
+    assert chat_id_of({"message": {"chat": {"id": 55}}}) == "55"
+    assert chat_id_of({"callback_query": {"message": {"chat": {"id": 66}}}}) == "66"
+
+
+def test_chat_id_of_returns_none_when_absent() -> None:
+    assert chat_id_of({"update_id": 1}) is None
+
+
+def test_callback_from_update_accepts_allow_and_deny() -> None:
+    for value in ("allow", "deny"):
+        update = {"callback_query": {"message": {"message_id": 3}, "data": value}}
+        assert callback_from_update(update) == (3, value)
+
+
+def test_callback_from_update_rejects_non_callback_updates() -> None:
+    assert callback_from_update({"message": {"text": "hi"}}) is None
+
+
+def test_callback_from_update_rejects_unknown_callback_data() -> None:
+    update = {"callback_query": {"message": {"message_id": 3}, "data": "maybe"}}
+    assert callback_from_update(update) is None
+
+
+def test_callback_from_update_rejects_a_missing_message_id() -> None:
+    assert callback_from_update({"callback_query": {"data": "allow"}}) is None
 
 
 def test_text_from_update_extracts_plain_message_text() -> None:

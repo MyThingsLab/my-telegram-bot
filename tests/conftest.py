@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 from mythings.ledger import LedgerEntry
+from mythings.testers import Tester
+
+from mytelegrambot.authz import OPERATOR, TESTER, Principal
+
+OPERATOR_CHAT = "chat"
 
 
 def entry(tool: str, kind: str, outcome: str, detail: str, *, ts: str) -> LedgerEntry:
     return LedgerEntry(tool=tool, kind=kind, outcome=outcome, detail=detail, ts=ts)
 
 
-def message_update(update_id: int, text: str, *, chat_id: str | int = "chat") -> dict:
+def operator(chat_id: str = OPERATOR_CHAT) -> Principal:
+    return Principal(OPERATOR, chat_id)
+
+
+def as_tester(tester: Tester, chat_id: str = "999") -> Principal:
+    return Principal(TESTER, chat_id, tester=tester)
+
+
+def message_update(update_id: int, text: str, *, chat_id: str | int = OPERATOR_CHAT) -> dict:
     return {
         "update_id": update_id,
         "message": {"message_id": update_id, "chat": {"id": chat_id}, "text": text},
@@ -15,7 +28,7 @@ def message_update(update_id: int, text: str, *, chat_id: str | int = "chat") ->
 
 
 def callback_update(
-    update_id: int, message_id: int, data: str, *, chat_id: str | int = "chat"
+    update_id: int, message_id: int, data: str, *, chat_id: str | int = OPERATOR_CHAT
 ) -> dict:
     return {
         "update_id": update_id,
@@ -27,15 +40,12 @@ def callback_update(
 
 
 class FakeTransport:
-    # Mocks only the Telegram HTTP boundary (send_message/poll_decision/fetch_updates).
-    def __init__(
-        self, *, reply: str | None = "allow", updates: list[dict] | None = None
-    ) -> None:
-        self.reply = reply
+    # Mocks only the Telegram HTTP boundary (send_message/fetch_updates).
+    def __init__(self, *, updates: list[dict] | None = None) -> None:
         self.sent: list[tuple[str, tuple[str, str] | None]] = []
+        self.sent_to: list[str | None] = []
         self.keyboards: list[tuple[tuple[str, ...], ...] | None] = []
         self.commands_set: list[tuple[tuple[str, str], ...]] = []
-        self.polled: list[tuple[int, float]] = []
         self.fetched: list[tuple[int | None, float]] = []
         self._updates = updates or []
         self._next_id = 1
@@ -44,10 +54,12 @@ class FakeTransport:
         self,
         text: str,
         *,
+        chat_id: str | None = None,
         buttons: tuple[str, str] | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
     ) -> int:
         self.sent.append((text, buttons))
+        self.sent_to.append(chat_id)
         self.keyboards.append(keyboard)
         message_id = self._next_id
         self._next_id += 1
@@ -55,10 +67,6 @@ class FakeTransport:
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
         self.commands_set.append(commands)
-
-    def poll_decision(self, message_id: int, *, timeout: float) -> str | None:
-        self.polled.append((message_id, timeout))
-        return self.reply
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]:
         self.fetched.append((offset, timeout))
@@ -73,6 +81,7 @@ class ErrorTransport:
         self,
         text: str,
         *,
+        chat_id: str | None = None,
         buttons: tuple[str, str] | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
     ) -> int:
@@ -80,9 +89,6 @@ class ErrorTransport:
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
         raise RuntimeError("telegram API unreachable")
-
-    def poll_decision(self, message_id: int, *, timeout: float) -> str | None:
-        raise AssertionError("should never be reached")
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]:
         raise AssertionError("should never be reached")

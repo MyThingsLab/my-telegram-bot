@@ -5,6 +5,9 @@ from mythings.engine import Engine
 from mythings.github import GitHub
 from mythings.ledger import Ledger
 from mythings.policy import Policy
+from mythings.testers import TesterStore
+
+from mytelegrambot.authz import Principal, release_engine_call, reserve_engine_call
 
 # myidea new's own CLI defaults to the cwd's repo via `gh`'s ambient detection;
 # that only works when invoked from inside some repo's checkout. `mytelegrambot
@@ -14,6 +17,11 @@ DEFAULT_IDEA_REPO = "MyThingsLab/my-idea"
 
 _NO_BODY_FALLBACK = "(filed via Telegram /idea; no additional detail provided)"
 _TELEGRAM_MAX_LEN = 4096
+
+_QUOTA_EXHAUSTED = (
+    "You've used your full allowance of explored ideas. Nothing was filed.\n"
+    "Ask the operator to raise your quota if you need more."
+)
 
 
 def _split_title_body(args_text: str) -> tuple[str, str]:
@@ -72,3 +80,40 @@ def handle_idea(
     if not result.posted:
         reply += "\n(Note: the brief above could not be posted as a GitHub comment.)"
     return _truncate_for_telegram(reply)
+
+
+def metered_idea(
+    args_text: str,
+    principal: Principal,
+    *,
+    store: TesterStore | None,
+    github: GitHub,
+    policy: Policy,
+    engine: Engine,
+    ledger: Ledger,
+    repo: str | None,
+    runner: Runner | None = None,
+) -> str:
+    # /idea is the tool's only Engine-spending command, so it is the only one that
+    # has to be metered. The reservation is taken *before* the call and refunded
+    # only if the call never happened (an exception), never after a successful
+    # spend -- so a crash over-counts against the tester rather than letting an
+    # unbilled call through. The operator is never metered.
+    #
+    # Accepted: a policy-denied filing still consumes one reservation. It errs in
+    # the safe direction, and the alternative is sniffing the reply text.
+    if not reserve_engine_call(principal, store):
+        return _QUOTA_EXHAUSTED
+    try:
+        return handle_idea(
+            args_text,
+            github=github,
+            policy=policy,
+            engine=engine,
+            ledger=ledger,
+            repo=repo,
+            runner=runner,
+        )
+    except Exception:
+        release_engine_call(principal, store)
+        raise

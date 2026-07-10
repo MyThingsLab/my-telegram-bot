@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from mythings.ledger import Ledger
@@ -8,12 +10,41 @@ from mythings.policy import Action, Decision, Policy, PolicyResult
 from mytelegrambot.transport import TelegramTransport, describe
 
 _DEFAULT_TIMEOUT = 300.0
+_DEFAULT_INTERVAL = 0.5
+_SELF_TOOL = "mytelegrambot"
 
 
 def format_ask_message(action: Action) -> str:
     lines = [f"Action: {action.kind}"]
     lines += [f"  {k}: {v}" for k, v in sorted(action.payload.items())]
     return "\n".join(lines)
+
+
+def await_decision(
+    ledger: Ledger,
+    message_id: int,
+    *,
+    timeout: float,
+    interval: float = _DEFAULT_INTERVAL,
+    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str | None:
+    # `ask` no longer touches getUpdates. The daemon owns that queue and writes a
+    # `kind=callback` entry when the human taps; this waits for the one carrying
+    # our own message_id. Two processes rendezvous through the append-only ledger,
+    # which is exactly the audit trail we'd want of an approval anyway.
+    #
+    # Returning None on timeout is what makes the caller fail closed -- unchanged.
+    deadline = now() + timeout
+    while True:
+        for entry in ledger.read(tool=_SELF_TOOL, kind="callback"):
+            if entry.data.get("message_id") == message_id:
+                decision = entry.data.get("decision")
+                return decision if decision in ("allow", "deny") else None
+        remaining = deadline - now()
+        if remaining <= 0:
+            return None
+        sleep(min(interval, remaining))
 
 
 @dataclass(frozen=True)
@@ -34,7 +65,7 @@ def ask_human(
     reply: str | None = None
     try:
         message_id = transport.send_message(format_ask_message(action), buttons=("Allow", "Deny"))
-        reply = transport.poll_decision(message_id, timeout=timeout)
+        reply = await_decision(ledger, message_id, timeout=timeout)
     except Exception as exc:  # any transport/API failure fails closed, never propagates
         print(f"mytelegrambot: transport error during ask, failing closed: {describe(exc)}")
         reply = None
