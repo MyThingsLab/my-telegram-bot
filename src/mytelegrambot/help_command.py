@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from mytelegrambot.authz import Principal
+
 # Static, deterministic replies -- no Engine call, no side effects, no args
 # consumed (help ignores whatever follows it). These keep the bot
 # self-describing: Telegram sends `/start` automatically the first time a human
@@ -25,5 +27,5 @@ _HELP_TEXT = "\n".join(
 )
 
 
-def help_reply(_args: str) -> str:
+def help_reply(_args: str, _principal: Principal) -> str:
     return _HELP_TEXT

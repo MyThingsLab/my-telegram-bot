@@ -11,9 +11,9 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
 - **Purpose:** bridges the harness to the user over Telegram: pushes ledger
   notifications, turns a `Policy` `ASK` decision into a real synchronous
   human confirmation instead of collapsing to `DENY` under an unattended
-  runner, and — the one inbound direction — lets the human capture a
-  `my-idea` from chat via `/idea <text>` so no idea gets missed for lack of a
-  terminal nearby.
+  runner, and — the one inbound direction — lets the operator, plus any tester
+  they have explicitly registered, capture a `my-idea` from chat via
+  `/idea <text>` so no idea gets missed for lack of a terminal nearby.
 - **Incremental notify cursor:** the default `notify` window is tracked by a
   **count** (`notified_count` = how many ledger entries the last run covered),
   an index into the append-only ledger — not a timestamp, which at second
@@ -26,22 +26,21 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
 - **The single Engine call:** none *directly* — `notify`/`ask` stay fully
   deterministic, relaying existing `Action`/`Ledger` data verbatim, never
   composing prose that could hallucinate over what it's relaying. The `/idea`
-  path handled by `poll` makes exactly one Engine call, but this tool never
+  path handled by `run` makes exactly one Engine call, but this tool never
   calls the Engine itself: that call is entirely delegated to MyIdea's own
   already-shipped, already-tested `myidea.explore.explore()`, imported as a
-  library. The other `poll` commands stay deterministic, no Engine, no side
+  library. The other `run` commands stay deterministic, no Engine, no side
   effects: `/help` and `/start` echo a fixed command list (`help_command.py`);
   `/status` renders counts read straight from the ledger (`status_command.py`).
   The `setup` CLI subcommand is a one-off admin call (no ledger, no Engine)
   that registers the `setMyCommands` menu and the persistent reply keyboard
   (`menu.py`); the keyboard's labels are literal `/commands` so a tap is just
-  ordinary command text — no `callback_query`, so it sidesteps the shared-offset
-  race entirely (unlike an inline keyboard, which would not).
+  ordinary command text, routed by the ordinary parser.
 - **Dependency-direction exception, deliberate:** every other cross-tool
   relationship in the fleet is a CLI hand-off, not a package dependency (e.g.
   MyPresentation → MyTypster), to keep tool repos decoupled at the code level.
   This tool imports `my-idea` (and, transitively, `my-guard`) directly as
-  Python packages instead — a one-off exception because `poll` needs
+  Python packages instead — a one-off exception because `run` needs
   `file_idea`'s/`explore`'s structured return values (`Issue`, `ExploreResult`)
   in-process to compose one synchronous Telegram reply, not a fire-and-forget
   hand-off. Do not "fix" this back to a subprocess call.
@@ -59,27 +58,49 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   the environment, never logged, never written to the ledger. The network
   call to the Telegram API is the tool's system boundary (mocked in tests),
   not routed through `Policy` itself.
-- **`poll` invariants:** `fetch_updates` silently drops any update not
-  addressed to this bot's single configured `chat_id` — inbound free text is
-  a new attack surface (unlike `poll_decision`, which only ever replies to a
-  button on a message only the intended recipient could see), so this keeps
-  the tool single-user by construction. The inbound cursor is a
-  `kind=poll` ledger entry carrying the last-seen `update_id` (mirrors
-  `notify`'s count-based cursor, just keyed by Telegram's id instead of a
-  length) and only advances after every fetched update in the batch has been
-  routed (or deliberately skipped, e.g. a `callback_query`) — a reply-send
-  failure is swallowed so the cursor still advances (a command's side effects,
-  like a filed GitHub issue, already happened and must not be repeated).
-  **Known, accepted limitations, not silently papered over:** (1) a process
-  crash between a command's side effects completing and this run's own
-  `kind=poll` ledger write would cause the next poll to reprocess that update
-  — GitHub issue creation isn't idempotent, so a crash in that exact window
-  could file a duplicate idea; acceptable for a personal, low-frequency,
-  single-user tool. (2) `poll`'s `fetch_updates` and `ask`'s `poll_decision`
-  both consume the same server-side, bot-token-wide Telegram offset queue
-  without coordination — if `poll` runs while an `ask_human()` call is
-  mid-wait for a button tap, `poll`'s cursor advance can consume that pending
-  callback before `poll_decision` ever sees it, timing the ask out
-  (fail-closed `DENY`) even though the human tapped in time. Not fixed here;
-  would require unifying both consumption paths under one poller.
+- **One consumer owns the update queue.** `mytelegrambot run` is a long-lived
+  daemon (systemd `Type=simple`, `Restart=always`) and its `fetch_updates` is
+  the *only* `getUpdates` caller in the tool. `poll_decision` is gone: `ask`
+  used to long-poll the same bot-token-wide offset queue, so a concurrent
+  `poll` could consume the human's button tap and time the ask out to a
+  fail-closed `DENY`. Now the daemon classifies each update — text → the
+  command router; `callback_query` → a `kind=callback` ledger entry keyed by
+  `message_id` — and `ask_human` (a *separate short-lived process*, since
+  other tools shell out to `mytelegrambot ask`) waits on the ledger for the
+  entry carrying its own `message_id`. The ledger is the rendezvous: no
+  socket, no new dependency, and the race can no longer be expressed. **Do
+  not reintroduce a second `getUpdates` caller.**
+- **Authorization is not the transport's job.** `fetch_updates` returns every
+  update Telegram sends; `authz.ChatAuthorizer` decides who may be heard.
+  The operator (`TELEGRAM_CHAT_ID`) is authorized *by configuration, never by
+  the database*, so a corrupt or absent testers db can never lock the owner
+  out. Everyone else must be a registered, enabled row in a
+  `mythings.testers.TesterStore`, and only when `run --testers-db` explicitly
+  points at one — absent that flag the tool is exactly as single-user as it
+  was. An unauthorized chat is dropped **silently**: no reply, no ledger
+  entry, so it learns nothing, not even that the bot is listening. A
+  `callback_query` from a non-operator chat is dropped too — an `ask` prompt
+  only ever goes to the operator, so a tester must never be able to resolve
+  one.
+- **Tester spend is capped, fail-closed.** `/idea` is the only Engine-spending
+  command, so it is the only metered one (`idea_command.metered_idea`). A
+  tester's reservation is taken from their quota *before* the call and
+  refunded only if the call never happened (an exception) — a crash therefore
+  over-counts against the tester rather than letting an unbilled call through.
+  Refusal is the default. The operator is never metered. Accepted: a
+  policy-denied filing still consumes one reservation; it errs in the safe
+  direction. A tester's activity is written to their own `ledger_for()` file,
+  so it never pollutes the operator's digest, `/status`, or the notify cursor.
+- **Cursor invariants:** the inbound cursor is a `kind=poll` ledger entry
+  carrying the last-seen `update_id` (mirrors `notify`'s count-based cursor,
+  just keyed by Telegram's id instead of a length), committed once per
+  non-empty batch; a crash-restart resumes from it. An idle long-poll writes
+  **nothing** — the old once-a-minute oneshot recorded a `skipped` entry as
+  proof it ran, which in a 30s loop would be pure ledger spam. A reply-send
+  failure is swallowed so the cursor still advances (the command's side
+  effects, like a filed GitHub issue, already happened and must not be
+  repeated). **Known, accepted limitation:** a crash between a command's side
+  effects completing and the batch's `kind=poll` write reprocesses that update;
+  GitHub issue creation isn't idempotent, so that exact window could file a
+  duplicate idea.
 - **Backlog label:** `my-telegram-bot`.
