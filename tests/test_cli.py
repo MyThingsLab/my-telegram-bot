@@ -144,7 +144,7 @@ def test_run_wires_the_daemon_with_routes_and_an_authorizer(
     code = cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
 
     assert code == 0
-    assert set(captured["routes"]) == {"idea", "note", "status", "help", "start"}
+    assert set(captured["routes"]) == {"idea", "note", "catalog", "wish", "status", "help", "start"}
     authorizer = captured["authorizer"]
     assert authorizer.authorize("chat").is_operator
     assert authorizer.authorize("999") is None  # no --testers-db: operator only
@@ -252,8 +252,12 @@ def test_setup_registers_the_command_menu_and_keyboard(
     # Registered the ☰ menu and pushed one greeting carrying the reply keyboard.
     assert len(transport.commands_set) == 1
     registered = {name for name, _desc in transport.commands_set[0]}
-    assert {"idea", "note", "status", "help"} <= registered
-    assert transport.keyboards[-1] == (("/idea", "/note"), ("/status", "/help"))
+    assert {"idea", "note", "catalog", "wish", "status", "help"} <= registered
+    assert transport.keyboards[-1] == (
+        ("/idea", "/note"),
+        ("/catalog", "/wish"),
+        ("/status", "/help"),
+    )
     assert "registered" in capsys.readouterr().out
 
 
@@ -305,11 +309,11 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
     seen: dict = {}
 
     def fake_explore_idea(action, principal, *, repo, **kwargs) -> Reply:
-        seen["explore"] = (action.number, repo)
+        seen["explore"] = (action.as_int(), repo)
         return Reply("explored")
 
     def fake_close_idea(action, principal, *, repo, **kwargs) -> Reply:
-        seen["close"] = (action.number, repo)
+        seen["close"] = (action.as_int(), repo)
         return Reply("closed")
 
     monkeypatch.setattr(cli, "explore_idea", fake_explore_idea)
@@ -320,13 +324,14 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
     cli.main(["run", "--engine", "noop", "--repo", "o/r", "--ledger", str(ledger_path)])
 
     callback_routes = captured["callback_routes"]
-    assert set(callback_routes) == {"idea:explore", "idea:close"}
+    assert set(callback_routes) == {"idea:explore", "idea:close", "guide:trial"}
 
     who = operator()
     assert (
-        callback_routes["idea:explore"](CallbackAction("idea:explore", 12), who).text == "explored"
+        callback_routes["idea:explore"](CallbackAction("idea:explore", "12"), who).text
+        == "explored"
     )
-    assert callback_routes["idea:close"](CallbackAction("idea:close", 12), who).text == "closed"
+    assert callback_routes["idea:close"](CallbackAction("idea:close", "12"), who).text == "closed"
     assert seen["explore"] == (12, "o/r")
     assert seen["close"] == (12, "o/r")
 
@@ -429,3 +434,58 @@ def test_run_note_repo_flag_overrides_the_default(
     captured["routes"]["note"]("x", operator())
 
     assert seen["repo"] == "o/notes"
+
+
+def test_run_wires_the_guide_verbs_and_the_trial_button(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    captured = _captured_run(monkeypatch)
+    _use_transport(monkeypatch, FakeTransport())
+
+    cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
+
+    assert {"catalog", "wish"} <= set(captured["routes"])
+    assert "guide:trial" in captured["callback_routes"]
+
+    # The catalog is real: built from the packaged phrasebook + core's manifest.
+    reply = captured["routes"]["catalog"]("", operator())
+    assert "There are" in reply.text
+    assert reply.inline is not None
+
+
+def test_run_trial_button_narrates_a_real_tool(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    captured = _captured_run(monkeypatch)
+    _use_transport(monkeypatch, FakeTransport())
+
+    cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
+
+    reply = captured["callback_routes"]["guide:trial"](
+        CallbackAction("guide:trial", "my-archivist"), operator()
+    )
+
+    assert "MyArchivist" in reply.text
+    assert "dry run" in reply.text.lower()
+
+
+def test_run_wires_the_wish_route_through_the_metered_handler(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    seen: dict = {}
+
+    def fake_metered_wish(text: str, principal, *, store, guide) -> Reply:
+        seen["text"] = text
+        seen["store"] = store
+        return Reply("wished")
+
+    monkeypatch.setattr(cli, "metered_wish", fake_metered_wish)
+    captured = _captured_run(monkeypatch)
+    _use_transport(monkeypatch, FakeTransport())
+
+    cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
+    reply = captured["routes"]["wish"]("tidy my books", operator())
+
+    assert reply.text == "wished"
+    assert seen["text"] == "tidy my books"
+    assert seen["store"] is None

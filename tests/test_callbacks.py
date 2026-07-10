@@ -47,7 +47,7 @@ def test_encode_and_parse_roundtrip() -> None:
     data = encode_action("idea", 12, "explore")
 
     assert data == "idea:12:explore"
-    assert parse_callback(data) == CallbackAction(key="idea:explore", number=12)
+    assert parse_callback(data) == CallbackAction(key="idea:explore", subject="12")
 
 
 def test_encode_rejects_data_over_telegrams_64_byte_limit() -> None:
@@ -56,8 +56,42 @@ def test_encode_rejects_data_over_telegrams_64_byte_limit() -> None:
 
 
 def test_parse_callback_rejects_malformed_data() -> None:
-    for bad in ("", "idea", "idea:12", "idea:notanumber:explore", "idea:12:explore:extra", ":12:x"):
+    for bad in ("", "idea", "idea:12", "idea:12:explore:extra", ":12:x", "idea::explore"):
         assert parse_callback(bad) is None, bad
+
+
+def test_parse_callback_keeps_a_non_numeric_subject() -> None:
+    # A trial acts on a tool, not an issue number.
+    assert parse_callback("guide:my-archivist:trial") == CallbackAction(
+        key="guide:trial", subject="my-archivist"
+    )
+
+
+def test_encode_action_rejects_colons_in_a_segment() -> None:
+    with pytest.raises(ValueError, match="colon-free"):
+        encode_action("guide", "my:tool", "trial")
+
+
+def test_as_int_narrows_only_numeric_subjects() -> None:
+    assert CallbackAction("idea:close", "12").as_int() == 12
+    assert CallbackAction("guide:trial", "my-archivist").as_int() is None
+
+
+def test_a_forged_non_numeric_idea_button_is_refused_not_crashed(tmp_path: Path) -> None:
+    # "idea:abc:close" now parses. The handler must reject it, not raise inside
+    # the daemon loop.
+    calls: list = []
+    reply = close_idea(
+        CallbackAction(key="idea:close", subject="abc"),
+        operator(),
+        policy=_AllowAll(),
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        repo="o/r",
+        runner=lambda argv: calls.append(argv) or "",
+    )
+
+    assert "no longer valid" in reply.text
+    assert calls == []
 
 
 def test_idea_buttons_carry_both_actions() -> None:
@@ -84,7 +118,7 @@ def test_dispatch_callback_returns_none_for_malformed_data() -> None:
 
 def _close(policy, ledger: Ledger, calls: list, number: int = 12) -> Reply:
     return close_idea(
-        CallbackAction(key="idea:close", number=number),
+        CallbackAction(key="idea:close", subject=str(number)),
         operator(),
         policy=policy,
         ledger=ledger,
@@ -152,7 +186,7 @@ def test_explore_idea_is_metered_and_refuses_an_exhausted_tester(
 
     def go():
         return explore_idea(
-            CallbackAction(key="idea:explore", number=5),
+            CallbackAction(key="idea:explore", subject="5"),
             as_tester(tester),
             store=store,
             github=None,
@@ -184,7 +218,7 @@ def test_explore_idea_flags_when_the_brief_could_not_be_posted(
     monkeypatch.setattr(idea_command, "explore", lambda **k: _Unposted())
 
     reply = explore_idea(
-        CallbackAction(key="idea:explore", number=5),
+        CallbackAction(key="idea:explore", subject="5"),
         as_tester(tester),
         store=store,
         github=None,
@@ -212,7 +246,7 @@ def test_explore_idea_refunds_when_the_engine_call_fails(
 
     with pytest.raises(RuntimeError, match="engine exploded"):
         explore_idea(
-            CallbackAction(key="idea:explore", number=5),
+            CallbackAction(key="idea:explore", subject="5"),
             as_tester(tester),
             store=store,
             github=None,
@@ -246,7 +280,7 @@ def test_a_tester_cannot_close_an_idea_they_did_not_file(tmp_path: Path) -> None
     calls: list = []
 
     reply = close_idea(
-        CallbackAction(key="idea:close", number=999),  # not theirs
+        CallbackAction(key="idea:close", subject="999"),  # not theirs
         as_tester(tester),
         policy=_AllowAll(),
         ledger=ledger,
@@ -263,7 +297,7 @@ def test_a_tester_can_close_an_idea_they_filed(tmp_path: Path) -> None:
     calls: list = []
 
     reply = close_idea(
-        CallbackAction(key="idea:close", number=5),
+        CallbackAction(key="idea:close", subject="5"),
         as_tester(tester),
         policy=_AllowAll(),
         ledger=ledger,
@@ -286,7 +320,7 @@ def test_a_tester_cannot_explore_an_idea_they_did_not_file(
     monkeypatch.setattr(idea_command, "explore", never)
 
     reply = explore_idea(
-        CallbackAction(key="idea:explore", number=999),
+        CallbackAction(key="idea:explore", subject="999"),
         as_tester(tester),
         store=store,
         github=None,
@@ -306,7 +340,7 @@ def test_the_operator_may_act_on_any_idea(tmp_path: Path) -> None:
     calls: list = []
 
     reply = close_idea(
-        CallbackAction(key="idea:close", number=4242),
+        CallbackAction(key="idea:close", subject="4242"),
         operator(),
         policy=_AllowAll(),
         ledger=ledger,
@@ -322,7 +356,7 @@ def test_the_operator_may_act_on_any_idea(tmp_path: Path) -> None:
 
 
 def _routes(reply_text: str = "done") -> dict:
-    return {"idea:close": lambda action, principal: Reply(f"{reply_text} #{action.number}")}
+    return {"idea:close": lambda action, principal: Reply(f"{reply_text} #{action.subject}")}
 
 
 def test_daemon_routes_a_button_press_to_its_handler(tmp_path: Path) -> None:
@@ -466,3 +500,21 @@ def test_gh_raises_with_stderr_on_failure(monkeypatch: pytest.MonkeyPatch) -> No
 
     with pytest.raises(RuntimeError, match="could not resolve to an Issue"):
         idea_command._gh(["issue", "close", "999"])
+
+
+def test_a_forged_non_numeric_explore_button_is_refused_not_crashed(tmp_path: Path) -> None:
+    store, tester, ledger = _tester_with_ledger(tmp_path, filed=5)
+
+    reply = explore_idea(
+        CallbackAction(key="idea:explore", subject="abc"),
+        as_tester(tester),
+        store=store,
+        github=None,
+        policy=_AllowAll(),
+        engine=None,
+        ledger=ledger,
+        repo="o/r",
+    )
+
+    assert "no longer valid" in reply.text
+    assert store.get(tester.id).engine_used == 0  # refused before the reservation

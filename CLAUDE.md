@@ -25,15 +25,17 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   `notified_count`), so a manual re-send never consumes the automatic queue.
 - **The single Engine call:** none *directly* — `notify`/`ask` stay fully
   deterministic, relaying existing `Action`/`Ledger` data verbatim, never
-  composing prose that could hallucinate over what it's relaying. The `/idea`
-  and `/note` paths handled by `run` each make exactly one Engine call, but this
-  tool never calls the Engine itself: those calls are entirely delegated to the
-  owning tool's own already-shipped, already-tested code — MyIdea's
-  `myidea.explore.explore()` and MyNotes' `mynotes.tag.tag()` — imported as
-  libraries. Filing (`file_idea`, `file_note`) is deterministic and spends
-  nothing; the capture verb composes filing + the one Engine call. The other
-  `run` commands stay deterministic, no Engine, no side effects: `/help` and
-  `/start` echo a fixed command list (`help_command.py`);
+  composing prose that could hallucinate over what it's relaying. The `/idea`,
+  `/note` and `/wish` paths handled by `run` each make exactly one Engine call,
+  but this tool never calls the Engine itself: those calls are entirely
+  delegated to the owning tool's own already-shipped, already-tested code —
+  MyIdea's `myidea.explore.explore()`, MyNotes' `mynotes.tag.tag()` and
+  MyGuide's `Guide.wish()` — imported as libraries. Filing (`file_idea`,
+  `file_note`) is deterministic and spends nothing; a capture verb composes
+  filing + the one Engine call. The other `run` commands stay deterministic, no
+  Engine, no side effects: `/catalog` and the `Try <tool>` trial button render
+  human-curated cards; `/help` and `/start` echo a fixed command list
+  (`help_command.py`);
   `/status` renders counts read straight from the ledger (`status_command.py`).
   The `setup` CLI subcommand is a one-off admin call (no ledger, no Engine)
   that registers the `setMyCommands` menu and the persistent reply keyboard
@@ -42,18 +44,26 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
 - **Dependency-direction exception, and the rule behind it:** every other
   cross-tool relationship in the fleet is a CLI hand-off, not a package
   dependency (e.g. MyPresentation → MyTypster), to keep tool repos decoupled at
-  the code level. This tool imports `my-idea` and `my-notes` (and, transitively,
-  `my-guard`) directly as Python packages instead. Originally framed as a
-  one-off for `/idea`; `/note` made the actual rule explicit:
+  the code level. This tool imports `my-idea`, `my-notes` and `my-guide` (and,
+  transitively, `my-guard`) directly as Python packages instead. The rule has
+  been restated twice as it met reality — first as "a one-off for `/idea`", then
+  as "a capture verb imports its owning tool" when `/note` arrived. `/wish` is a
+  *query*, not a capture, and needed the same import, so the honest rule is:
 
-  > **A capture verb imports its owning tool.**
+  > **This tool imports any tool whose structured result it must render in one
+  > synchronous reply.**
 
-  A capture verb must compose *one synchronous Telegram reply* out of the
-  owning tool's structured return values (`Issue`, `ExploreResult`,
-  `TagResult`) in-process. A subprocess hand-off would force parsing stdout or
-  re-reading the issue to recover them — exactly the fragility this exception
-  exists to avoid. Do not "fix" these back to subprocess calls. A *non*-capture
-  relationship still has no business being a package dependency.
+  `Issue`, `ExploreResult`, `TagResult`, `Wish`, `Message` — a subprocess
+  hand-off would force parsing stdout or re-reading the issue to recover them,
+  exactly the fragility this exception exists to avoid. Do not "fix" these back
+  to subprocess calls.
+
+  **Be honest about the cost:** that now covers *every* cross-tool call this
+  repo makes, so the fleet's CLI-hand-off rule constrains nothing here. What
+  still holds is the direction — those tools never import this one — and the
+  discipline that this repo composes their results and never reimplements them.
+  A tool whose result this bot does *not* render in a reply (a fire-and-forget
+  hand-off) still has no business being a package dependency.
 - **Invariants / rules:** no `Workspace` — no code edits, no PR ever. This
   tool *is* a `Policy` decorator (`TelegramPolicy`), not a new contract: it
   wraps an inner `Policy`, delegates non-`ASK` decisions untouched, and only
@@ -119,9 +129,11 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   `MAX_PENDING` distinct chats**, past which knocks are dropped exactly as
   before. Recorded regardless of `--testers-db`: you must see who knocked
   before you have anyone to put in a database.
-- **Tester spend is capped, fail-closed.** `/idea`, `/note` and the
+- **Tester spend is capped, fail-closed.** `/idea`, `/note`, `/wish` and the
   `Explore deeper` button are the Engine-spending paths, so they are the metered
-  ones (`metered_idea`, `metered_note`, `explore_idea`). A
+  ones (`metered_idea`, `metered_note`, `metered_wish`, `explore_idea`).
+  `/catalog` and the `Try <tool>` trial button are deterministic — a newcomer
+  reads the whole fleet and dry-runs any tool for free. A
   tester's reservation is taken from their quota *before* the call and
   refunded only if the call never happened (an exception) — a crash therefore
   over-counts against the tester rather than letting an unbilled call through.

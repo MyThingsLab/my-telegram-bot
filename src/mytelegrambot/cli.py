@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 
 from myguard import Guard
+from myguide.catalog import build_catalog
+from myguide.guide import Guide
 from mythings.engine import ClaudeCLIEngine, Engine, NoopEngine
 from mythings.github import GitHub
 from mythings.ledger import Ledger
@@ -13,6 +15,7 @@ from mythings.policy import Action, Decision
 from mythings.testers import TesterStore
 
 from mytelegrambot.authz import ChatAuthorizer, Principal, ledger_for
+from mytelegrambot.guide_command import handle_catalog, metered_wish, trial_tool
 from mytelegrambot.help_command import help_reply
 from mytelegrambot.idea_command import (
     DEFAULT_IDEA_REPO,
@@ -50,7 +53,17 @@ def build_routes(
     engine: Engine,
     repo: str,
     note_repo: str,
+    catalog,
 ) -> dict[str, CommandHandler]:
+    def _guide(principal: Principal) -> Guide:
+        # One Guide per request so a tester's activity lands in their own ledger.
+        return Guide(
+            catalog=catalog,
+            ledger=ledger_for(principal, main=ledger, store=store),
+            engine=engine,
+            policy=guard,
+        )
+
     def idea(text: str, principal: Principal) -> Reply:
         return metered_idea(
             text,
@@ -79,9 +92,17 @@ def build_routes(
         # A tester sees their own activity, not the operator's whole fleet.
         return Reply(build_status(ledger_for(principal, main=ledger, store=store)))
 
+    def catalog_cmd(text: str, principal: Principal) -> Reply:
+        return handle_catalog(text, principal, guide=_guide(principal))
+
+    def wish(text: str, principal: Principal) -> Reply:
+        return metered_wish(text, principal, store=store, guide=_guide(principal))
+
     return {
         "idea": idea,
         "note": note,
+        "catalog": catalog_cmd,
+        "wish": wish,
         "status": status,
         "help": help_reply,
         "start": help_reply,
@@ -97,8 +118,9 @@ def build_callback_routes(
     engine: Engine,
     repo: str,
     note_repo: str,
+    catalog,
 ) -> dict[str, CallbackHandler]:
-    del note_repo  # buttons are idea-only for now
+    del note_repo  # notes have no buttons
 
     def explore(action: CallbackAction, principal: Principal) -> Reply:
         return explore_idea(
@@ -121,7 +143,16 @@ def build_callback_routes(
             repo=repo,
         )
 
-    return {"idea:explore": explore, "idea:close": close}
+    def trial(action: CallbackAction, principal: Principal) -> Reply:
+        guide = Guide(
+            catalog=catalog,
+            ledger=ledger_for(principal, main=ledger, store=store),
+            engine=engine,
+            policy=guard,
+        )
+        return trial_tool(action, principal, guide=guide)
+
+    return {"idea:explore": explore, "idea:close": close, "guide:trial": trial}
 
 
 def _testers_command(args: argparse.Namespace) -> int:
@@ -246,6 +277,9 @@ def main(argv: list[str] | None = None) -> int:
             "engine": _ENGINES[args.engine](),
             "repo": repo,
             "note_repo": args.note_repo or DEFAULT_NOTE_REPO,
+            # Built once: reads the packaged phrasebook and core's fleet manifest,
+            # and refuses outright if the phrasebook describes an unshipped tool.
+            "catalog": build_catalog(),
         }
         print(
             f"mytelegrambot: polling (long_poll={args.long_poll}s, "

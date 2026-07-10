@@ -27,6 +27,7 @@ _QUOTA_EXHAUSTED = (
 )
 
 _NOT_YOUR_IDEA = "That idea isn't one of yours."
+_STALE_BUTTON = "That button is no longer valid."
 
 
 def _may_act_on(principal: Principal, ledger: Ledger, number: int) -> bool:
@@ -174,14 +175,17 @@ def explore_idea(
     # "Explore deeper": one more Engine call on an existing idea, delegated whole
     # to MyIdea's explore(). Metered exactly like /idea -- a button must not be a
     # way around the quota.
-    if not _may_act_on(principal, ledger, action.number):
+    number = action.as_int()
+    if number is None:
+        return Reply(_STALE_BUTTON)
+    if not _may_act_on(principal, ledger, number):
         return Reply(_NOT_YOUR_IDEA)
     if not reserve_engine_call(principal, store):
         return Reply(_QUOTA_EXHAUSTED)
     runner_kwargs = {"runner": runner} if runner is not None else {}
     try:
         result = explore(
-            issue=action.number,
+            issue=number,
             engine=engine,
             github=github,
             policy=policy,
@@ -192,10 +196,10 @@ def explore_idea(
     except Exception:
         release_engine_call(principal, store)
         raise
-    text = f"Re-explored my-idea#{action.number}\n\n{result.comment}"
+    text = f"Re-explored my-idea#{number}\n\n{result.comment}"
     if not result.posted:
         text += "\n(Note: the brief above could not be posted as a GitHub comment.)"
-    return Reply(_truncate_for_telegram(text), inline=idea_buttons(action.number))
+    return Reply(_truncate_for_telegram(text), inline=idea_buttons(number))
 
 
 def close_idea(
@@ -209,13 +213,16 @@ def close_idea(
 ) -> Reply:
     # No Engine call, so no quota -- but it is a GitHub write, and every GitHub
     # write in this fleet passes the Policy seam first, exactly as file_idea does.
-    if not _may_act_on(principal, ledger, action.number):
+    number = action.as_int()
+    if number is None:
+        return Reply(_STALE_BUTTON)
+    if not _may_act_on(principal, ledger, number):
         return Reply(_NOT_YOUR_IDEA)
-    gate = Action(kind="issue-close", payload={"issue": action.number, "repo": repo or ""})
+    gate = Action(kind="issue-close", payload={"issue": number, "repo": repo or ""})
     if policy.evaluate(gate).under(unattended=True) is not Decision.ALLOW:
-        return Reply(f"Closing my-idea#{action.number} was denied by policy.")
+        return Reply(f"Closing my-idea#{number} was denied by policy.")
 
-    argv = ["issue", "close", str(action.number)]
+    argv = ["issue", "close", str(number)]
     if repo:
         argv += ["--repo", repo]
     runner(argv)
@@ -224,7 +231,7 @@ def close_idea(
         "mytelegrambot",
         "idea_closed",
         "success",
-        detail=f"closed idea #{action.number} from chat",
-        idea_issue=action.number,
+        detail=f"closed idea #{number} from chat",
+        idea_issue=number,
     )
-    return Reply(f"Closed my-idea#{action.number}.")
+    return Reply(f"Closed my-idea#{number}.")

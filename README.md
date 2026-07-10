@@ -35,9 +35,13 @@ the one exception (see below).
   `file_idea`/`explore`) so you see the full brief right in Telegram.
   `/note <text>` is its twin for freeform notes: files a `my-notes` issue and
   MyNotes' one Engine call comes back with a proposed title and tags.
+  `/catalog` explains every shipped tool in plain language (MyGuide), with a
+  **Try <tool>** button under each that narrates a dry run. `/wish <text>` takes
+  what you want in your own words and points you at the tools that serve it —
+  MyGuide's one Engine call — or tells you the fleet can't.
   `/status` reports what the bot has done so far, read straight from the
   ledger. `/help` (and `/start`, which Telegram auto-sends on first open) reply
-  with a static command list. Everything except `/idea` and `/note` is
+  with a static command list. Everything except `/idea`, `/note` and `/wish` is
   deterministic — no Engine call, no side effects.
 - **Buttons:** every `/idea` reply carries **Explore deeper** and **Close idea**
   buttons, so the thread stays actionable without typing another command.
