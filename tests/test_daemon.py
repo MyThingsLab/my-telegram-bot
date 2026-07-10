@@ -11,10 +11,11 @@ from conftest import OPERATOR_CHAT, FakeTransport, callback_update, message_upda
 from mytelegrambot.authz import ChatAuthorizer, Principal
 from mytelegrambot.inbound import handle_batch, last_seen_update_id, run_forever
 from mytelegrambot.policy import ask_human, await_decision
+from mytelegrambot.router import Reply
 
 
-def _echo(text: str, principal: Principal) -> str:
-    return f"{principal.label} said {text}"
+def _echo(text: str, principal: Principal) -> Reply:
+    return Reply(f"{principal.label} said {text}")
 
 
 def _authorizer(store: TesterStore | None = None) -> ChatAuthorizer:
@@ -170,7 +171,7 @@ def test_handler_exception_does_not_kill_the_batch(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "l.jsonl")
     transport = FakeTransport()
 
-    def boom(_text: str, _principal: Principal) -> str:
+    def boom(_text: str, _principal: Principal) -> Reply:
         raise RuntimeError("handler bug")
 
     result = handle_batch(

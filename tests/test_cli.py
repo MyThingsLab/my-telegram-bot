@@ -9,6 +9,7 @@ from mythings.testers import TesterStore
 
 from conftest import ErrorTransport, FakeTransport, entry, operator
 from mytelegrambot import cli
+from mytelegrambot.router import CallbackAction, Reply
 from mytelegrambot.transport import HTTPTelegramTransport
 
 
@@ -188,9 +189,9 @@ def test_run_routes_help_start_and_status_deterministically(
 
     routes = captured["routes"]
     who = operator()
-    assert "/idea" in routes["help"]("", who)
+    assert "/idea" in routes["help"]("", who).text
     assert routes["start"]("", who) == routes["help"]("", who)
-    assert "Ideas filed via chat: 1" in routes["status"]("", who)
+    assert "Ideas filed via chat: 1" in routes["status"]("", who).text
 
 
 def test_run_wires_the_idea_route_through_the_metered_handler(
@@ -198,12 +199,12 @@ def test_run_wires_the_idea_route_through_the_metered_handler(
 ) -> None:
     seen: dict = {}
 
-    def fake_metered_idea(text: str, principal, *, store, engine, repo, **kwargs) -> str:
+    def fake_metered_idea(text: str, principal, *, store, engine, repo, **kwargs) -> Reply:
         seen["text"] = text
         seen["repo"] = repo
         seen["engine"] = engine
         seen["store"] = store
-        return "ok reply"
+        return Reply("ok reply")
 
     monkeypatch.setattr(cli, "metered_idea", fake_metered_idea)
     captured = _captured_run(monkeypatch)
@@ -212,7 +213,7 @@ def test_run_wires_the_idea_route_through_the_metered_handler(
     cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
     reply = captured["routes"]["idea"]("a new tool", operator())
 
-    assert reply == "ok reply"
+    assert reply.text == "ok reply"
     assert seen["text"] == "a new tool"
     assert seen["repo"] == cli.DEFAULT_IDEA_REPO
     assert isinstance(seen["engine"], NoopEngine)
@@ -224,9 +225,9 @@ def test_run_repo_flag_overrides_the_default(
 ) -> None:
     seen: dict = {}
 
-    def fake_metered_idea(text: str, principal, *, repo, **kwargs) -> str:
+    def fake_metered_idea(text: str, principal, *, repo, **kwargs) -> Reply:
         seen["repo"] = repo
-        return "ok"
+        return Reply("ok")
 
     monkeypatch.setattr(cli, "metered_idea", fake_metered_idea)
     captured = _captured_run(monkeypatch)
@@ -295,3 +296,35 @@ def test_testers_needs_no_telegram_credentials(
     )
 
     assert code == 0
+
+
+def test_run_wires_the_callback_routes_to_the_button_handlers(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path
+) -> None:
+    seen: dict = {}
+
+    def fake_explore_idea(action, principal, *, repo, **kwargs) -> Reply:
+        seen["explore"] = (action.number, repo)
+        return Reply("explored")
+
+    def fake_close_idea(action, principal, *, repo, **kwargs) -> Reply:
+        seen["close"] = (action.number, repo)
+        return Reply("closed")
+
+    monkeypatch.setattr(cli, "explore_idea", fake_explore_idea)
+    monkeypatch.setattr(cli, "close_idea", fake_close_idea)
+    captured = _captured_run(monkeypatch)
+    _use_transport(monkeypatch, FakeTransport())
+
+    cli.main(["run", "--engine", "noop", "--repo", "o/r", "--ledger", str(ledger_path)])
+
+    callback_routes = captured["callback_routes"]
+    assert set(callback_routes) == {"idea:explore", "idea:close"}
+
+    who = operator()
+    assert (
+        callback_routes["idea:explore"](CallbackAction("idea:explore", 12), who).text == "explored"
+    )
+    assert callback_routes["idea:close"](CallbackAction("idea:close", 12), who).text == "closed"
+    assert seen["explore"] == (12, "o/r")
+    assert seen["close"] == (12, "o/r")

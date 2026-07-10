@@ -14,12 +14,17 @@ from mythings.testers import TesterStore
 
 from mytelegrambot.authz import ChatAuthorizer, Principal, ledger_for
 from mytelegrambot.help_command import help_reply
-from mytelegrambot.idea_command import DEFAULT_IDEA_REPO, metered_idea
+from mytelegrambot.idea_command import (
+    DEFAULT_IDEA_REPO,
+    close_idea,
+    explore_idea,
+    metered_idea,
+)
 from mytelegrambot.inbound import run_forever
 from mytelegrambot.menu import COMMAND_MENU, REPLY_KEYBOARD, SETUP_GREETING
 from mytelegrambot.notifier import notify
 from mytelegrambot.policy import ask_human
-from mytelegrambot.router import CommandHandler
+from mytelegrambot.router import CallbackAction, CallbackHandler, CommandHandler, Reply
 from mytelegrambot.status_command import build_status
 from mytelegrambot.transport import HTTPTelegramTransport
 
@@ -42,7 +47,7 @@ def build_routes(
     engine: Engine,
     repo: str,
 ) -> dict[str, CommandHandler]:
-    def idea(text: str, principal: Principal) -> str:
+    def idea(text: str, principal: Principal) -> Reply:
         return metered_idea(
             text,
             principal,
@@ -54,11 +59,44 @@ def build_routes(
             repo=repo,
         )
 
-    def status(_text: str, principal: Principal) -> str:
+    def status(_text: str, principal: Principal) -> Reply:
         # A tester sees their own activity, not the operator's whole fleet.
-        return build_status(ledger_for(principal, main=ledger, store=store))
+        return Reply(build_status(ledger_for(principal, main=ledger, store=store)))
 
     return {"idea": idea, "status": status, "help": help_reply, "start": help_reply}
+
+
+def build_callback_routes(
+    *,
+    ledger: Ledger,
+    store: TesterStore | None,
+    github: GitHub,
+    guard: Guard,
+    engine: Engine,
+    repo: str,
+) -> dict[str, CallbackHandler]:
+    def explore(action: CallbackAction, principal: Principal) -> Reply:
+        return explore_idea(
+            action,
+            principal,
+            store=store,
+            github=github,
+            policy=guard,
+            engine=engine,
+            ledger=ledger_for(principal, main=ledger, store=store),
+            repo=repo,
+        )
+
+    def close(action: CallbackAction, principal: Principal) -> Reply:
+        return close_idea(
+            action,
+            principal,
+            policy=guard,
+            ledger=ledger_for(principal, main=ledger, store=store),
+            repo=repo,
+        )
+
+    return {"idea:explore": explore, "idea:close": close}
 
 
 def _testers_command(args: argparse.Namespace) -> int:
@@ -155,14 +193,14 @@ def main(argv: list[str] | None = None) -> int:
         # operator's is dropped. Admitting testers is an explicit act.
         store = TesterStore(args.testers_db) if args.testers_db else None
         authorizer = ChatAuthorizer(os.environ["TELEGRAM_CHAT_ID"], store=store)
-        routes = build_routes(
-            ledger=ledger,
-            store=store,
-            github=GitHub(repo=repo),
-            guard=Guard(),
-            engine=_ENGINES[args.engine](),
-            repo=repo,
-        )
+        wiring = {
+            "ledger": ledger,
+            "store": store,
+            "github": GitHub(repo=repo),
+            "guard": Guard(),
+            "engine": _ENGINES[args.engine](),
+            "repo": repo,
+        }
         print(
             f"mytelegrambot: polling (long_poll={args.long_poll}s, "
             f"testers={'on' if store else 'off'})"
@@ -171,7 +209,8 @@ def main(argv: list[str] | None = None) -> int:
             ledger=ledger,
             transport=transport,
             authorizer=authorizer,
-            routes=routes,
+            routes=build_routes(**wiring),
+            callback_routes=build_callback_routes(**wiring),
             long_poll=args.long_poll,
         )
         return 0

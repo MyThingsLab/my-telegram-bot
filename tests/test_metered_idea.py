@@ -11,6 +11,7 @@ from mythings.testers import TesterStore
 from conftest import as_tester, operator
 from mytelegrambot import idea_command
 from mytelegrambot.idea_command import metered_idea
+from mytelegrambot.router import Reply
 
 # Only the quota gate is under test here; handle_idea itself is covered in
 # test_idea_command.py against a fake `gh`. Patching it out keeps this focused on
@@ -20,11 +21,11 @@ from mytelegrambot.idea_command import metered_idea
 def _call(monkeypatch: pytest.MonkeyPatch, principal, store, tmp_path: Path, *, boom=False):
     calls = {"n": 0}
 
-    def fake_handle_idea(text: str, **kwargs: object) -> str:
+    def fake_handle_idea(text: str, **kwargs: object) -> Reply:
         calls["n"] += 1
         if boom:
             raise RuntimeError("engine exploded")
-        return "brief"
+        return Reply("brief")
 
     monkeypatch.setattr(idea_command, "handle_idea", fake_handle_idea)
     reply = metered_idea(
@@ -37,7 +38,7 @@ def _call(monkeypatch: pytest.MonkeyPatch, principal, store, tmp_path: Path, *, 
         ledger=Ledger(tmp_path / "l.jsonl"),
         repo="o/r",
     )
-    return reply, calls["n"]
+    return reply.text, calls["n"]
 
 
 def test_operator_is_never_metered(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

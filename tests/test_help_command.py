@@ -7,7 +7,7 @@ _WHO = operator()
 
 
 def test_help_reply_lists_the_available_commands() -> None:
-    reply = help_reply("", _WHO)
+    reply = help_reply("", _WHO).text
 
     assert "/idea" in reply
     assert "/help" in reply

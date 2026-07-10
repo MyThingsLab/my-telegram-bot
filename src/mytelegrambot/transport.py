@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Protocol
+
+from mytelegrambot.router import InlineKeyboard
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -14,13 +17,15 @@ class TelegramTransport(Protocol):
         text: str,
         *,
         chat_id: str | None = None,
-        buttons: tuple[str, str] | None = None,
+        inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
     ) -> int: ...
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]: ...
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None: ...
+
+    def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
 
 
 class HTTPTelegramTransport:
@@ -44,19 +49,18 @@ class HTTPTelegramTransport:
         text: str,
         *,
         chat_id: str | None = None,
-        buttons: tuple[str, str] | None = None,
+        inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
     ) -> int:
         payload: dict = {"chat_id": chat_id or self._chat_id, "text": text}
-        if buttons is not None:
-            # Inline Allow/Deny keyboard: a per-message callback (used by `ask`).
-            allow, deny = buttons
+        if inline is not None:
+            # Per-message inline buttons: taps arrive as `callback_query` updates
+            # carrying the button's callback_data. Used by `ask` (Allow/Deny) and
+            # by `/idea` replies (Explore deeper / Close).
             payload["reply_markup"] = {
                 "inline_keyboard": [
-                    [
-                        {"text": allow, "callback_data": "allow"},
-                        {"text": deny, "callback_data": "deny"},
-                    ]
+                    [{"text": label, "callback_data": data} for label, data in row]
+                    for row in inline
                 ]
             }
         elif keyboard is not None:
@@ -79,6 +83,17 @@ class HTTPTelegramTransport:
             "setMyCommands",
             {"commands": [{"command": name, "description": desc} for name, desc in commands]},
         )
+
+    def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
+        # Telegram spins a loading indicator on the tapped button until this is
+        # called. Best-effort: a failure here is cosmetic (the spinner hangs), and
+        # must never undo an action that already happened.
+        try:
+            self._call(
+                "answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text}
+            )
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"mytelegrambot: answerCallbackQuery failed (cosmetic): {describe(exc)}")
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]:
         # The *only* getUpdates caller in the tool. `poll_decision` used to be a
@@ -122,12 +137,23 @@ def text_from_update(update: dict) -> str | None:
     return str(message["text"])
 
 
-def callback_from_update(update: dict) -> tuple[int, str] | None:
+@dataclass(frozen=True)
+class Callback:
+    query_id: str
+    message_id: int
+    data: str
+
+
+def callback_from_update(update: dict) -> Callback | None:
+    # Deliberately does not judge `data`: an Allow/Deny tap and an "Explore
+    # deeper" tap are the same kind of update, and deciding which is which is the
+    # daemon's routing job, not the transport's parsing job.
     callback = update.get("callback_query")
     if not callback:
         return None
     message_id = callback.get("message", {}).get("message_id")
+    query_id = callback.get("id")
     data = callback.get("data")
-    if message_id is None or data not in ("allow", "deny"):
+    if message_id is None or query_id is None or not data:
         return None
-    return int(message_id), data
+    return Callback(query_id=str(query_id), message_id=int(message_id), data=str(data))

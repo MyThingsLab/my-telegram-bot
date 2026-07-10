@@ -37,6 +37,13 @@ the one exception (see below).
   ledger. `/help` (and `/start`, which Telegram auto-sends on first open) reply
   with a static command list. Everything except `/idea` is deterministic — no
   Engine call, no side effects.
+- **Buttons:** every `/idea` reply carries **Explore deeper** and **Close idea**
+  buttons, so the thread stays actionable without typing another command.
+  `Explore deeper` is metered exactly like `/idea` — a button is not a way around
+  a tester's quota — and `Close idea` passes the same `Policy` gate every GitHub
+  write in the fleet does. Because Telegram delivers whatever `callback_data` a
+  client sends, the *subject* is authorized too: a tester may only act on an idea
+  they filed.
 - **Testers:** by default only the operator's chat (`TELEGRAM_CHAT_ID`) is
   heard; every other chat is dropped silently. Point `run --testers-db` at a
   `mythings.testers` database to admit registered testers. Each tester gets a

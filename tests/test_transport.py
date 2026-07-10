@@ -81,12 +81,12 @@ def test_send_message_addresses_an_explicit_chat(urlopen: _FakeUrlopen) -> None:
     assert urlopen.calls[0][1]["chat_id"] == "999"
 
 
-def test_send_message_with_buttons_builds_allow_deny_inline_keyboard(
+def test_send_message_with_inline_builds_a_callback_keyboard(
     urlopen: _FakeUrlopen,
 ) -> None:
     urlopen.queue({"ok": True, "result": {"message_id": 7}})
 
-    _transport().send_message("confirm?", buttons=("Allow", "Deny"))
+    _transport().send_message("confirm?", inline=((("Allow", "allow"), ("Deny", "deny")),))
 
     _url, payload, _timeout = urlopen.calls[0]
     assert payload["reply_markup"] == {
@@ -182,23 +182,29 @@ def test_chat_id_of_returns_none_when_absent() -> None:
     assert chat_id_of({"update_id": 1}) is None
 
 
-def test_callback_from_update_accepts_allow_and_deny() -> None:
-    for value in ("allow", "deny"):
-        update = {"callback_query": {"message": {"message_id": 3}, "data": value}}
-        assert callback_from_update(update) == (3, value)
+def test_callback_from_update_reads_any_callback_data() -> None:
+    # The transport does not judge the payload -- routing is the daemon's job.
+    for value in ("allow", "deny", "idea:12:explore"):
+        update = {"callback_query": {"id": "q", "message": {"message_id": 3}, "data": value}}
+        cb = callback_from_update(update)
+        assert (cb.query_id, cb.message_id, cb.data) == ("q", 3, value)
 
 
 def test_callback_from_update_rejects_non_callback_updates() -> None:
     assert callback_from_update({"message": {"text": "hi"}}) is None
 
 
-def test_callback_from_update_rejects_unknown_callback_data() -> None:
-    update = {"callback_query": {"message": {"message_id": 3}, "data": "maybe"}}
+def test_callback_from_update_rejects_empty_callback_data() -> None:
+    update = {"callback_query": {"id": "q", "message": {"message_id": 3}, "data": ""}}
     assert callback_from_update(update) is None
 
 
-def test_callback_from_update_rejects_a_missing_message_id() -> None:
-    assert callback_from_update({"callback_query": {"data": "allow"}}) is None
+def test_callback_from_update_rejects_a_missing_message_id_or_query_id() -> None:
+    assert callback_from_update({"callback_query": {"id": "q", "data": "allow"}}) is None
+    assert (
+        callback_from_update({"callback_query": {"message": {"message_id": 3}, "data": "allow"}})
+        is None
+    )
 
 
 def test_text_from_update_extracts_plain_message_text() -> None:
@@ -224,3 +230,20 @@ def test_describe_includes_http_error_body() -> None:
 
 def test_describe_falls_back_to_repr_for_other_errors() -> None:
     assert describe(ValueError("boom")) == "ValueError('boom')"
+
+
+def test_answer_callback_query_stops_the_spinner(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"ok": True, "result": True})
+
+    _transport().answer_callback_query("q123", text="done")
+
+    url, payload, _timeout = urlopen.calls[0]
+    assert url == "https://api.telegram.org/botTOKEN/answerCallbackQuery"
+    assert payload == {"callback_query_id": "q123", "text": "done"}
+
+
+def test_answer_callback_query_swallows_a_transport_error(urlopen: _FakeUrlopen) -> None:
+    # Cosmetic only: a hung spinner must never undo an action that already ran.
+    urlopen.queue(urllib.error.URLError("connection refused"))
+
+    _transport().answer_callback_query("q123")  # does not raise
