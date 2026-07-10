@@ -33,10 +33,12 @@ the one exception (see below).
   `/idea <title>` files a `my-idea`-labeled issue and, in the same reply,
   explores it (one Engine call, entirely delegated to MyIdea's own
   `file_idea`/`explore`) so you see the full brief right in Telegram.
+  `/note <text>` is its twin for freeform notes: files a `my-notes` issue and
+  MyNotes' one Engine call comes back with a proposed title and tags.
   `/status` reports what the bot has done so far, read straight from the
   ledger. `/help` (and `/start`, which Telegram auto-sends on first open) reply
-  with a static command list. Everything except `/idea` is deterministic — no
-  Engine call, no side effects.
+  with a static command list. Everything except `/idea` and `/note` is
+  deterministic — no Engine call, no side effects.
 - **Buttons:** every `/idea` reply carries **Explore deeper** and **Close idea**
   buttons, so the thread stays actionable without typing another command.
   `Explore deeper` is metered exactly like `/idea` — a button is not a way around
@@ -72,7 +74,7 @@ from the environment, never logged, never written to the ledger.
 mytelegrambot setup
 mytelegrambot notify [--since ISO8601]
 mytelegrambot ask --action-kind <kind> --payload-json <json> [--timeout 300]
-mytelegrambot run [--repo owner/name] [--engine claude-cli|noop] [--testers-db PATH]
+mytelegrambot run [--repo owner/name] [--note-repo owner/name] [--engine claude-cli|noop] [--testers-db PATH]
 mytelegrambot testers pending
 mytelegrambot testers add <handle> --chat-id <id> --quota <n>
 mytelegrambot testers disable <id>

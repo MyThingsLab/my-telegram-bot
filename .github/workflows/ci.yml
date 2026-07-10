@@ -30,6 +30,7 @@ jobs:
           pip install "my-things-core @ git+https://github.com/${{ github.repository_owner }}/my-things-core@main"
           pip install "my-guard @ git+https://github.com/${{ github.repository_owner }}/my-guard@main"
           pip install "my-idea @ git+https://github.com/${{ github.repository_owner }}/my-idea@main"
+          pip install "my-notes @ git+https://github.com/${{ github.repository_owner }}/my-notes@main"
       - name: Install
         run: pip install -e ".[dev]"
       - name: Ruff

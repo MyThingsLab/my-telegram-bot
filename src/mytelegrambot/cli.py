@@ -22,6 +22,7 @@ from mytelegrambot.idea_command import (
 )
 from mytelegrambot.inbound import run_forever
 from mytelegrambot.menu import COMMAND_MENU, REPLY_KEYBOARD, SETUP_GREETING
+from mytelegrambot.note_command import DEFAULT_NOTE_REPO, metered_note
 from mytelegrambot.notifier import notify
 from mytelegrambot.pending import PendingChats
 from mytelegrambot.pending import pending as pending_chats
@@ -48,6 +49,7 @@ def build_routes(
     guard: Guard,
     engine: Engine,
     repo: str,
+    note_repo: str,
 ) -> dict[str, CommandHandler]:
     def idea(text: str, principal: Principal) -> Reply:
         return metered_idea(
@@ -61,11 +63,29 @@ def build_routes(
             repo=repo,
         )
 
+    def note(text: str, principal: Principal) -> Reply:
+        return metered_note(
+            text,
+            principal,
+            store=store,
+            github=GitHub(repo=note_repo),
+            policy=guard,
+            engine=engine,
+            ledger=ledger_for(principal, main=ledger, store=store),
+            repo=note_repo,
+        )
+
     def status(_text: str, principal: Principal) -> Reply:
         # A tester sees their own activity, not the operator's whole fleet.
         return Reply(build_status(ledger_for(principal, main=ledger, store=store)))
 
-    return {"idea": idea, "status": status, "help": help_reply, "start": help_reply}
+    return {
+        "idea": idea,
+        "note": note,
+        "status": status,
+        "help": help_reply,
+        "start": help_reply,
+    }
 
 
 def build_callback_routes(
@@ -76,7 +96,10 @@ def build_callback_routes(
     guard: Guard,
     engine: Engine,
     repo: str,
+    note_repo: str,
 ) -> dict[str, CallbackHandler]:
+    del note_repo  # buttons are idea-only for now
+
     def explore(action: CallbackAction, principal: Principal) -> Reply:
         return explore_idea(
             action,
@@ -155,6 +178,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument(
         "--repo", default=None, help=f"owner/name for filed ideas; default {DEFAULT_IDEA_REPO}"
     )
+    run.add_argument(
+        "--note-repo", default=None, help=f"owner/name for filed notes; default {DEFAULT_NOTE_REPO}"
+    )
     run.add_argument("--engine", choices=sorted(_ENGINES), default="claude-cli")
     run.add_argument("--long-poll", type=float, default=30.0)
     run.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
@@ -219,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             "guard": Guard(),
             "engine": _ENGINES[args.engine](),
             "repo": repo,
+            "note_repo": args.note_repo or DEFAULT_NOTE_REPO,
         }
         print(
             f"mytelegrambot: polling (long_poll={args.long_poll}s, "
