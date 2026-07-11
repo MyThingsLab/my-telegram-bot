@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from mynotes.capture import file_note
 from mynotes.tag import Runner, tag
 from mythings.engine import Engine
@@ -20,7 +22,6 @@ from mytelegrambot.router import Reply
 DEFAULT_NOTE_REPO = "MyThingsLab/my-notes"
 
 _EMPTY_BODY_FALLBACK = "(captured via Telegram /note)"
-_TELEGRAM_MAX_LEN = 4096
 
 _QUOTA_EXHAUSTED = (
     "You've used your full allowance of Engine calls. Nothing was filed.\n"
@@ -33,13 +34,6 @@ def _split_title_body(args_text: str) -> tuple[str, str]:
     return title.strip(), rest.strip()
 
 
-def _truncate_for_telegram(text: str) -> str:
-    if len(text) <= _TELEGRAM_MAX_LEN:
-        return text
-    marker = "\n…[truncated]"
-    return text[: _TELEGRAM_MAX_LEN - len(marker)] + marker
-
-
 def handle_note(
     args_text: str,
     *,
@@ -49,12 +43,13 @@ def handle_note(
     ledger: Ledger,
     repo: str | None,
     runner: Runner | None = None,
-) -> Reply:
+) -> Iterator[Reply]:
     runner_kwargs = {"runner": runner} if runner is not None else {}
 
     title, body = _split_title_body(args_text)
     if not title:
-        return Reply("Usage: /note <text>\n(optionally continued on later lines)")
+        yield Reply("Usage: /note <text>\n(optionally continued on later lines)")
+        return
 
     created = file_note(
         title=title,
@@ -65,7 +60,16 @@ def handle_note(
         **runner_kwargs,
     )
     if created is None:
-        return Reply("Filing the note was denied by policy — nothing was created.")
+        yield Reply("Filing the note was denied by policy — nothing was created.")
+        return
+
+    # Filing spends nothing and is quick; tagging is the Engine call. Confirm the
+    # capture first -- the note is safely on GitHub either way, and that is the
+    # part the human cares about not losing.
+    yield Reply(
+        f"🗒 Noted as [my-notes#{created.number}]({created.url})\nTagging it now…",
+        markdown=True,
+    )
 
     result = tag(
         issue=created.number,
@@ -77,14 +81,16 @@ def handle_note(
         comment=True,
         **runner_kwargs,
     )
-    text = f"Noted as my-notes#{created.number} — {created.url}"
-    if result.outcome == "success":
-        text += f"\n\nTitle: {result.title}"
-        if result.tags:
-            text += f"\nTags: {', '.join(result.tags)}"
-        if not result.posted:
-            text += "\n(Note: the tags above could not be posted as a GitHub comment.)"
-    return Reply(_truncate_for_telegram(text))
+    if result.outcome != "success":
+        yield Reply("I couldn't tag that note — it's filed, but untagged.")
+        return
+
+    text = f"*{result.title}*"
+    if result.tags:
+        text += f"\nTags: {', '.join(result.tags)}"
+    if not result.posted:
+        text += "\n\n(Note: the tags above could not be posted as a GitHub comment.)"
+    yield Reply(text, markdown=True)
 
 
 def metered_note(
@@ -98,14 +104,15 @@ def metered_note(
     ledger: Ledger,
     repo: str | None,
     runner: Runner | None = None,
-) -> Reply:
+) -> Iterator[Reply]:
     # Same contract as metered_idea: reserve before spending, refund only when
     # the call never happened, so a crash over-counts rather than letting an
     # unbilled Engine call through. The operator is never metered.
     if not reserve_engine_call(principal, store):
-        return Reply(_QUOTA_EXHAUSTED)
+        yield Reply(_QUOTA_EXHAUSTED)
+        return
     try:
-        return handle_note(
+        yield from handle_note(
             args_text,
             github=github,
             policy=policy,

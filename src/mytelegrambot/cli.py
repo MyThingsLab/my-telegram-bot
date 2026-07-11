@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 from myguard import Guard
@@ -64,7 +65,7 @@ def build_routes(
             policy=guard,
         )
 
-    def idea(text: str, principal: Principal) -> Reply:
+    def idea(text: str, principal: Principal) -> Iterator[Reply]:
         return metered_idea(
             text,
             principal,
@@ -76,7 +77,7 @@ def build_routes(
             repo=repo,
         )
 
-    def note(text: str, principal: Principal) -> Reply:
+    def note(text: str, principal: Principal) -> Iterator[Reply]:
         return metered_note(
             text,
             principal,
@@ -90,12 +91,12 @@ def build_routes(
 
     def status(_text: str, principal: Principal) -> Reply:
         # A tester sees their own activity, not the operator's whole fleet.
-        return Reply(build_status(ledger_for(principal, main=ledger, store=store)))
+        return Reply(build_status(ledger_for(principal, main=ledger, store=store)), markdown=True)
 
     def catalog_cmd(text: str, principal: Principal) -> Reply:
         return handle_catalog(text, principal, guide=_guide(principal))
 
-    def wish(text: str, principal: Principal) -> Reply:
+    def wish(text: str, principal: Principal) -> Iterator[Reply]:
         return metered_wish(text, principal, store=store, guide=_guide(principal))
 
     return {
@@ -122,7 +123,7 @@ def build_callback_routes(
 ) -> dict[str, CallbackHandler]:
     del note_repo  # notes have no buttons
 
-    def explore(action: CallbackAction, principal: Principal) -> Reply:
+    def explore(action: CallbackAction, principal: Principal) -> Iterator[Reply]:
         return explore_idea(
             action,
             principal,

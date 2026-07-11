@@ -17,7 +17,7 @@ def _last(entries: list[LedgerEntry], *, tool: str, kind: str) -> LedgerEntry | 
 def build_status(ledger: Ledger) -> str:
     entries = list(ledger)
     if not entries:
-        return "📊 Bot status\n\nNo activity recorded yet."
+        return "*📊 Bot status*\n\nNo activity recorded yet."
 
     ideas_filed = sum(
         1
@@ -34,7 +34,7 @@ def build_status(ledger: Ledger) -> str:
         f"({allowed} allowed · {denied} denied · {timed_out} timed out)"
     )
     lines = [
-        "📊 Bot status",
+        "*📊 Bot status*",
         "",
         f"Ideas filed via chat: {ideas_filed}",
         asks_line,

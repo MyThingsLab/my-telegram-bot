@@ -137,3 +137,27 @@ def test_telegram_policy_relays_ask_to_human(tmp_path: Path) -> None:
     assert result.decision is Decision.ALLOW
     assert len(transport.sent) == 1
     assert ledger.read(kind="ask")[0].kind == "ask"
+
+
+def test_an_oversized_ask_prompt_is_split_with_the_buttons_on_the_last_chunk(
+    tmp_path: Path,
+) -> None:
+    # An Action's payload is unbounded. Sent as one message it 400s, and ask_human
+    # would fail closed to DENY without the operator ever seeing the question.
+    transport = FakeTransport()
+    action = Action(kind="write-file", payload={"diff": "x" * 9000})
+
+    result = ask_human(
+        action,
+        transport=transport,
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        timeout=0,
+    )
+
+    assert len(transport.sent) > 1
+    assert all(len(text) <= 4096 for text, _inline in transport.sent)
+    inlines = [inline for _text, inline in transport.sent]
+    assert inlines[-1] is not None  # Allow/Deny hang on the final chunk
+    assert all(inline is None for inline in inlines[:-1])
+    # And that final chunk's message_id is the one await_decision waits on.
+    assert result.message_id == len(transport.sent)

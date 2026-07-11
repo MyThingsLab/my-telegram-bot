@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from mythings.ledger import Ledger
@@ -20,11 +22,25 @@ from mytelegrambot.transport import (
     TelegramTransport,
     callback_from_update,
     chat_id_of,
+    chunk_for_telegram,
     describe,
     text_from_update,
 )
 
 _SELF_TOOL = "mytelegrambot"
+
+# Telegram clears the "typing…" indicator after about five seconds, so a handler
+# that blocks on an Engine call for a minute has to keep refreshing it.
+_TYPING_REFRESH_SECONDS = 4.0
+
+# How long a handler must block before the wait is worth announcing at all. Below
+# this, /help and /status just answer, with no "typing…" flicker in front.
+_TYPING_DELAY_SECONDS = 0.4
+
+# What a caller sees when a handler raises. The exception itself goes to the log,
+# never into the chat: the reader cannot act on a traceback, and testers are not
+# entitled to this tool's internals.
+_HANDLER_FAILED = "⚠️ Something went wrong handling that. It has been logged for the operator."
 
 # `ask`'s Allow/Deny buttons carry the ASK_DECISIONS callback_data values. They are
 # never routed to a handler: they answer a question a *separate* process is
@@ -66,13 +82,81 @@ class BatchResult:
 
 
 def _send(transport: TelegramTransport, reply: Reply, principal: Principal) -> None:
+    # An explored brief routinely runs past Telegram's 4096-char cap. Splitting it
+    # keeps the tail the human actually waited for; the buttons hang under the
+    # final chunk, where they read as acting on the whole reply.
+    chunks = chunk_for_telegram(reply.text)
+    for index, chunk in enumerate(chunks):
+        is_last = index == len(chunks) - 1
+        try:
+            transport.send_message(
+                chunk,
+                chat_id=principal.chat_id,
+                inline=reply.inline if is_last else None,
+                markdown=reply.markdown,
+            )
+        except Exception as exc:
+            # The handler's side effects (e.g. an idea already filed on GitHub)
+            # happened before we got here -- a failed reply must not cause the
+            # update to be reprocessed, which would repeat them. The cursor still
+            # advances, and we stop rather than push the remaining chunks into a
+            # channel that just rejected one.
+            print(f"mytelegrambot: reply send failed: {describe(exc)}")
+            return
+
+
+@contextmanager
+def _typing(transport: TelegramTransport, principal: Principal) -> Iterator[None]:
+    # Held around every wait for a handler's next reply, so an Engine call reads
+    # as the bot thinking rather than as the bot being dead. Cosmetic by
+    # construction: the thread is a daemon, every send is best-effort, and the
+    # first failure ends the refresh loop instead of retrying into a wall.
+    stop = threading.Event()
+
+    def keep_alive() -> None:
+        # Wait before the *first* action, not just between refreshes. Every pull
+        # is wrapped, including the one that turns out to be StopIteration, so
+        # sending immediately would leave a phantom "typing…" hanging after the
+        # last message -- promising more that is never coming. A wait too short to
+        # notice is a wait not worth announcing.
+        if stop.wait(_TYPING_DELAY_SECONDS):
+            return
+        while True:
+            try:
+                transport.send_chat_action("typing", chat_id=principal.chat_id)
+            except Exception as exc:
+                print(f"mytelegrambot: typing indicator failed (cosmetic): {describe(exc)}")
+                return
+            if stop.wait(_TYPING_REFRESH_SECONDS):
+                return
+
+    thread = threading.Thread(target=keep_alive, daemon=True)
+    thread.start()
     try:
-        transport.send_message(reply.text, chat_id=principal.chat_id, inline=reply.inline)
-    except Exception as exc:
-        # The handler's side effects (e.g. an idea already filed on GitHub)
-        # happened before we got here -- a failed reply must not cause the update
-        # to be reprocessed, which would repeat them. The cursor still advances.
-        print(f"mytelegrambot: reply send failed: {describe(exc)}")
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+
+
+def _drain(replies: Iterator[Reply], *, transport: TelegramTransport, principal: Principal) -> bool:
+    # A handler yields as it goes, so each reply is sent the moment it exists
+    # rather than at the end. Its body runs *between* our next() calls, which is
+    # exactly where the typing indicator belongs -- and where an exception will
+    # surface, since a generator does nothing until it is pulled.
+    sent_any = False
+    while True:
+        try:
+            with _typing(transport, principal):
+                reply = next(replies)
+        except StopIteration:
+            return sent_any
+        except Exception as exc:
+            print(f"mytelegrambot: command handling failed, not retried: {describe(exc)}")
+            _send(transport, Reply(_HANDLER_FAILED), principal)
+            return True
+        _send(transport, reply, principal)
+        sent_any = True
 
 
 def _handle_ask_decision(callback: Callback, *, ledger: Ledger) -> None:
@@ -104,19 +188,25 @@ def _handle_callback(
         transport.answer_callback_query(callback.query_id)
         return True
 
+    # Answer the tap *before* doing the work, not after. Telegram spins the button
+    # until this lands, and the work behind a button is now slow: "Explore deeper"
+    # blocks on a whole Engine call, and "Close idea" on a `gh` round-trip. It must
+    # come before dispatch, not merely before _drain -- a handler that returns a
+    # plain Reply rather than a generator has already run by the time dispatch
+    # returns. The answer is cosmetic and must never undo an action that already
+    # happened, which is exactly why it is safe to send first; an unrouted or
+    # failed tap still gets one, or the button looks wedged forever.
+    transport.answer_callback_query(callback.query_id)
+
     try:
-        reply = dispatch_callback(callback.data, callback_routes, principal)
+        replies = dispatch_callback(callback.data, callback_routes, principal)
     except Exception as exc:  # a handler bug must not kill the daemon
         print(f"mytelegrambot: callback handling failed, not retried: {describe(exc)}")
-        reply = Reply(f"Something went wrong handling that: {exc}")
+        replies = iter((Reply(_HANDLER_FAILED),))
 
-    # Answer regardless: an unrouted or failed tap must still stop Telegram's
-    # spinner, or the button looks wedged forever.
-    transport.answer_callback_query(callback.query_id)
-    if reply is None:
+    if replies is None:
         return False
-    _send(transport, reply, principal)
-    return True
+    return _drain(replies, transport=transport, principal=principal)
 
 
 def handle_batch(
@@ -164,14 +254,14 @@ def handle_batch(
             continue
 
         try:
-            reply = dispatch(text, routes, principal)
+            replies = dispatch(text, routes, principal)
         except Exception as exc:  # a handler bug must not kill the daemon
             print(f"mytelegrambot: command handling failed, not retried: {describe(exc)}")
-            reply = Reply(f"Something went wrong handling that: {exc}")
-        if reply is None:
+            replies = iter((Reply(_HANDLER_FAILED),))
+        if replies is None:
             continue
         routed += 1
-        _send(transport, reply, principal)
+        _drain(replies, transport=transport, principal=principal)
 
     return BatchResult(len(updates), routed, callbacks, dropped)
 

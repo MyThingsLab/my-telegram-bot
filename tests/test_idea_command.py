@@ -8,7 +8,8 @@ from mythings.github import GitHub
 from mythings.ledger import Ledger
 from mythings.policy import Action, Decision, PolicyResult
 
-from mytelegrambot.idea_command import handle_idea
+from conftest import all_text, replies
+from mytelegrambot.idea_command import handle_idea, idea_buttons
 
 # A small, self-contained fake `gh` runner covering exactly the subcommands
 # file_idea()/explore() issue (my-idea's own tests use an equivalent FakeGh,
@@ -93,16 +94,34 @@ def _reply(fake: FakeGh, *, engine, policy, ledger, args_text: str = "a new tool
 
 
 def _handle(fake: FakeGh, *, engine, policy, ledger, args_text: str = "a new tool idea") -> str:
-    return _reply(fake, engine=engine, policy=policy, ledger=ledger, args_text=args_text).text
+    return all_text(_reply(fake, engine=engine, policy=policy, ledger=ledger, args_text=args_text))
 
 
-def test_handle_idea_files_and_explores_in_one_reply(tmp_path: Path) -> None:
+def test_handle_idea_acknowledges_the_filed_issue_before_exploring(tmp_path: Path) -> None:
+    # The whole point of streaming: the issue number reaches the human as soon as
+    # it exists, not a full Engine call later.
+    fake = FakeGh()
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+
+    sent = replies(_reply(fake, engine=ScriptedEngine(BRIEF), policy=AllowAll(), ledger=ledger))
+
+    assert len(sent) == 2
+    ack, brief = sent
+    assert "my-idea#9" in ack.text
+    assert "https://github.com/o/r/issues/9" in ack.text
+    assert ack.inline is None  # nothing to act on until the brief exists
+    assert "A new idea captured from Telegram." in brief.text
+    assert "Verdict:** build" in brief.text
+    assert brief.inline == idea_buttons(9)
+
+
+def test_handle_idea_files_and_explores(tmp_path: Path) -> None:
     fake = FakeGh()
     ledger = Ledger(tmp_path / "ledger.jsonl")
 
     reply = _handle(fake, engine=ScriptedEngine(BRIEF), policy=AllowAll(), ledger=ledger)
 
-    assert "Filed as my-idea#9" in reply
+    assert "my-idea#9" in reply
     assert "https://github.com/o/r/issues/9" in reply
     assert "A new idea captured from Telegram." in reply
     assert "Verdict:** build" in reply
@@ -178,7 +197,7 @@ def test_handle_idea_noop_engine_still_replies_with_deterministic_brief(tmp_path
 
     reply = _handle(fake, engine=NoopEngine(), policy=AllowAll(), ledger=ledger)
 
-    assert "Filed as my-idea#9" in reply
+    assert "my-idea#9" in reply
     assert "No judgment engine attached" in reply  # honest degrade, never fabricated
 
 
@@ -198,17 +217,21 @@ def test_handle_idea_flags_when_the_brief_could_not_be_posted(tmp_path: Path) ->
         fake, engine=ScriptedEngine(BRIEF), policy=AllowCreateDenyComment(), ledger=ledger
     )
 
-    assert "Filed as my-idea#9" in reply
+    assert "my-idea#9" in reply
     assert "could not be posted" in reply
     assert fake.comments == []
 
 
-def test_truncates_a_reply_longer_than_telegrams_message_limit(tmp_path: Path) -> None:
+def test_an_oversized_brief_is_kept_whole_for_the_transport_to_chunk(tmp_path: Path) -> None:
+    # The brief is what the human waited a whole Engine call for, so the handler
+    # hands it over intact; splitting it across messages is the transport's job
+    # (see test_transport's chunking tests). It used to be truncated here, which
+    # threw away the tail.
     fake = FakeGh()
     ledger = Ledger(tmp_path / "ledger.jsonl")
     huge_brief = {**BRIEF, "risks": ["x" * 500 for _ in range(20)]}
 
     reply = _handle(fake, engine=ScriptedEngine(huge_brief), policy=AllowAll(), ledger=ledger)
 
-    assert len(reply) <= 4096
-    assert reply.endswith("…[truncated]")
+    assert len(reply) > 4096
+    assert "truncated" not in reply

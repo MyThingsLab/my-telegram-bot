@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from mythings.ledger import Ledger, LedgerEntry
 
-from mytelegrambot.transport import TelegramTransport, describe
+from mytelegrambot.transport import TelegramTransport, chunk_for_telegram, describe
 
 _SELF_TOOL = "mytelegrambot"
 
@@ -74,14 +74,28 @@ def notify(
         )
         return NotifyResult("skipped", 0, None)
 
+    # A digest is as long as the backlog makes it, and Telegram hard-rejects
+    # anything past 4096 chars. Sending it as one message meant a big enough
+    # backlog 400'd, held the cursor, and was retried identically forever -- a
+    # digest that could never be delivered and only grew. Chunking is what stops
+    # that from being a permanent wedge.
+    #
+    # If a later chunk fails, the cursor still holds and the whole digest is re-sent
+    # next run, so the delivered chunks arrive twice. A duplicated notification is
+    # strictly better than a dropped one, which is what advancing the cursor here
+    # would risk.
     try:
-        message_id = transport.send_message(format_notify_message(entries))
+        message_ids = [
+            transport.send_message(chunk)
+            for chunk in chunk_for_telegram(format_notify_message(entries))
+        ]
     except Exception as exc:
         # The sole comms channel must not crash on a transient Telegram outage.
         # Record nothing: with no notify entry the cursor stays put, so the same
         # digest is retried on the next run rather than lost.
         print(f"mytelegrambot: notify send failed, will retry next run: {describe(exc)}")
         return NotifyResult("failure", len(entries), None)
+    message_id = message_ids[0]
 
     ledger.record(
         tool=_SELF_TOOL,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Iterator
 
 from myidea.explore import Runner, explore, file_idea
 from mythings.engine import Engine
@@ -19,7 +20,6 @@ from mytelegrambot.router import CallbackAction, InlineKeyboard, Reply, encode_a
 DEFAULT_IDEA_REPO = "MyThingsLab/my-idea"
 
 _NO_BODY_FALLBACK = "(filed via Telegram /idea; no additional detail provided)"
-_TELEGRAM_MAX_LEN = 4096
 
 _QUOTA_EXHAUSTED = (
     "You've used your full allowance of explored ideas. Nothing was filed.\n"
@@ -70,11 +70,10 @@ def _split_title_body(args_text: str) -> tuple[str, str]:
     return title.strip(), rest.strip()
 
 
-def _truncate_for_telegram(text: str) -> str:
-    if len(text) <= _TELEGRAM_MAX_LEN:
-        return text
-    marker = "\n…[truncated]"
-    return text[: _TELEGRAM_MAX_LEN - len(marker)] + marker
+def _brief(comment: str, posted: bool) -> str:
+    if posted:
+        return comment
+    return f"{comment}\n\n(Note: the brief above could not be posted as a GitHub comment.)"
 
 
 def handle_idea(
@@ -86,7 +85,7 @@ def handle_idea(
     ledger: Ledger,
     repo: str | None,
     runner: Runner | None = None,
-) -> Reply:
+) -> Iterator[Reply]:
     # `runner` is an override for tests only: file_idea/explore already default
     # to a real `gh` subprocess when it's omitted, which is the correct
     # production behavior (the same real `gh` the `github` object itself
@@ -95,7 +94,8 @@ def handle_idea(
 
     title, body = _split_title_body(args_text)
     if not title:
-        return Reply("Usage: /idea <title>\n(optionally followed by more detail on later lines)")
+        yield Reply("Usage: /idea <title>\n(optionally followed by more detail on later lines)")
+        return
 
     created = file_idea(
         title=title,
@@ -106,7 +106,17 @@ def handle_idea(
         **runner_kwargs,
     )
     if created is None:
-        return Reply("Idea filing was denied by policy — nothing was created.")
+        yield Reply("Idea filing was denied by policy — nothing was created.")
+        return
+
+    # The issue exists the moment file_idea returns, but explore() then blocks for
+    # a full Engine call. Hand over the thing we already have rather than sitting
+    # on it: the human gets a link they can open while the brief is still being
+    # written, and if the Engine call dies they still know the idea was captured.
+    yield Reply(
+        f"📝 Filed as [my-idea#{created.number}]({created.url})\nExploring it now…",
+        markdown=True,
+    )
 
     result = explore(
         issue=created.number,
@@ -117,10 +127,11 @@ def handle_idea(
         repo=repo,
         **runner_kwargs,
     )
-    text = f"Filed as my-idea#{created.number} — {created.url}\n\n{result.comment}"
-    if not result.posted:
-        text += "\n(Note: the brief above could not be posted as a GitHub comment.)"
-    return Reply(_truncate_for_telegram(text), inline=idea_buttons(created.number))
+    yield Reply(
+        _brief(result.comment, result.posted),
+        inline=idea_buttons(created.number),
+        markdown=True,
+    )
 
 
 def metered_idea(
@@ -134,7 +145,7 @@ def metered_idea(
     ledger: Ledger,
     repo: str | None,
     runner: Runner | None = None,
-) -> Reply:
+) -> Iterator[Reply]:
     # /idea and the "Explore deeper" button are the tool's only Engine-spending
     # paths, so they are the only metered ones. The reservation is taken *before*
     # the call and refunded only if the call never happened (an exception), never
@@ -144,9 +155,10 @@ def metered_idea(
     # Accepted: a policy-denied filing still consumes one reservation. It errs in
     # the safe direction, and the alternative is sniffing the reply text.
     if not reserve_engine_call(principal, store):
-        return Reply(_QUOTA_EXHAUSTED)
+        yield Reply(_QUOTA_EXHAUSTED)
+        return
     try:
-        return handle_idea(
+        yield from handle_idea(
             args_text,
             github=github,
             policy=policy,
@@ -171,17 +183,25 @@ def explore_idea(
     ledger: Ledger,
     repo: str | None,
     runner: Runner | None = None,
-) -> Reply:
+) -> Iterator[Reply]:
     # "Explore deeper": one more Engine call on an existing idea, delegated whole
     # to MyIdea's explore(). Metered exactly like /idea -- a button must not be a
     # way around the quota.
     number = action.as_int()
     if number is None:
-        return Reply(_STALE_BUTTON)
+        yield Reply(_STALE_BUTTON)
+        return
     if not _may_act_on(principal, ledger, number):
-        return Reply(_NOT_YOUR_IDEA)
+        yield Reply(_NOT_YOUR_IDEA)
+        return
     if not reserve_engine_call(principal, store):
-        return Reply(_QUOTA_EXHAUSTED)
+        yield Reply(_QUOTA_EXHAUSTED)
+        return
+
+    # Nothing to hand over yet -- the idea already exists -- but the tap still
+    # buys a minute of Engine call, so say the work started.
+    yield Reply(f"🔍 Exploring my-idea#{number} again…")
+
     runner_kwargs = {"runner": runner} if runner is not None else {}
     try:
         result = explore(
@@ -196,10 +216,11 @@ def explore_idea(
     except Exception:
         release_engine_call(principal, store)
         raise
-    text = f"Re-explored my-idea#{number}\n\n{result.comment}"
-    if not result.posted:
-        text += "\n(Note: the brief above could not be posted as a GitHub comment.)"
-    return Reply(_truncate_for_telegram(text), inline=idea_buttons(number))
+    yield Reply(
+        _brief(result.comment, result.posted),
+        inline=idea_buttons(number),
+        markdown=True,
+    )
 
 
 def close_idea(
