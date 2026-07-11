@@ -15,7 +15,10 @@ the one exception (see below).
 
 - **Notify:** reads the shared `Ledger`'s entries since this tool's own last
   `kind=notify` write (incremental window, same pattern as MyReporter/
-  MyChangelogger) and pushes them as one Telegram message.
+  MyChangelogger) and pushes them to Telegram, split across messages if the
+  backlog runs past Telegram's 4096-character limit. (It used to send one
+  message: a large enough backlog was rejected outright, the cursor held, and the
+  same undeliverable digest was retried forever.)
 - **Ask:** `TelegramPolicy` wraps any inner `Policy` (typically MyGuard's
   `Guard`). Non-`ASK` decisions pass through untouched. An `ASK` sends a real
   Allow/Deny prompt over Telegram and blocks (bounded by `timeout`) for a
@@ -30,19 +33,26 @@ the one exception (see below).
   it is the only `getUpdates` caller, a concurrent `ask` and an inbound command
   can no longer steal each other's updates.
 
-  `/idea <title>` files a `my-idea`-labeled issue and, in the same reply,
-  explores it (one Engine call, entirely delegated to MyIdea's own
-  `file_idea`/`explore`) so you see the full brief right in Telegram.
-  `/note <text>` is its twin for freeform notes: files a `my-notes` issue and
-  MyNotes' one Engine call comes back with a proposed title and tags.
-  `/catalog` explains every shipped tool in plain language (MyGuide), with a
-  **Try <tool>** button under each that narrates a dry run. `/wish <text>` takes
-  what you want in your own words and points you at the tools that serve it —
-  MyGuide's one Engine call — or tells you the fleet can't.
+  `/idea <title>` files a `my-idea`-labeled issue and then explores it (one
+  Engine call, entirely delegated to MyIdea's own `file_idea`/`explore`) so you
+  see the full brief right in Telegram. `/note <text>` is its twin for freeform
+  notes: files a `my-notes` issue and MyNotes' one Engine call comes back with a
+  proposed title and tags. `/catalog` explains every shipped tool in plain
+  language (MyGuide), with a **Try <tool>** button under each that narrates a dry
+  run. `/wish <text>` takes what you want in your own words and points you at the
+  tools that serve it — MyGuide's one Engine call — or tells you the fleet can't.
   `/status` reports what the bot has done so far, read straight from the
   ledger. `/help` (and `/start`, which Telegram auto-sends on first open) reply
   with a static command list. Everything except `/idea`, `/note` and `/wish` is
-  deterministic — no Engine call, no side effects.
+  deterministic — no Engine call, no side effects. Mistype a command and you get
+  a nudge toward `/help`; ordinary chat (no leading `/`) is still ignored.
+- **Talking back while it thinks:** an Engine call takes tens of seconds, so the
+  bot answers *before* it has finished. `/idea` and `/note` file their issue
+  first, so they send you the issue number and link straight away and the brief
+  as a follow-up — if the Engine call then fails, you still know the capture
+  landed. Throughout, you see a live "typing…" indicator rather than dead air.
+  Replies past Telegram's 4096-character limit are split across messages instead
+  of truncated: the tail of a brief is the part you waited for.
 - **Buttons:** every `/idea` reply carries **Explore deeper** and **Close idea**
   buttons, so the thread stays actionable without typing another command.
   `Explore deeper` is metered exactly like `/idea` — a button is not a way around

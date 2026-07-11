@@ -10,6 +10,7 @@ from mytelegrambot.transport import (
     HTTPTelegramTransport,
     callback_from_update,
     chat_id_of,
+    chunk_for_telegram,
     describe,
     text_from_update,
 )
@@ -247,3 +248,121 @@ def test_answer_callback_query_swallows_a_transport_error(urlopen: _FakeUrlopen)
     urlopen.queue(urllib.error.URLError("connection refused"))
 
     _transport().answer_callback_query("q123")  # does not raise
+
+
+# ---------------------------------------------------------------- chunking
+#
+# Telegram hard-rejects text past 4096 chars. Two things this tool relays are
+# unbounded -- an Engine-composed brief and a digest of an arbitrarily long
+# ledger backlog -- so the cap has to be handled by splitting, not truncating:
+# the tail of a brief is the part the human waited a whole Engine call for.
+
+
+def test_chunk_leaves_a_short_text_as_one_message() -> None:
+    assert chunk_for_telegram("hello") == ["hello"]
+
+
+def test_chunk_splits_on_a_paragraph_boundary() -> None:
+    text = "a" * 3000 + "\n\n" + "b" * 3000
+
+    chunks = chunk_for_telegram(text)
+
+    assert chunks == ["a" * 3000, "b" * 3000]
+    assert all(len(c) <= 4096 for c in chunks)
+
+
+def test_chunk_falls_back_to_a_line_boundary_when_no_paragraph_break_fits() -> None:
+    text = "\n".join("x" * 500 for _ in range(20))  # 20 lines, no blank lines
+
+    chunks = chunk_for_telegram(text)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 4096 for c in chunks)
+    assert all(set(c) <= {"x", "\n"} for c in chunks)  # no line was cut mid-run
+
+
+def test_chunk_hard_cuts_a_single_oversized_line() -> None:
+    # Nothing to split on: the cap still has to be respected.
+    chunks = chunk_for_telegram("y" * 10000)
+
+    assert all(len(c) <= 4096 for c in chunks)
+    assert "".join(chunks) == "y" * 10000
+
+
+def test_chunk_loses_nothing_it_was_given() -> None:
+    text = "\n\n".join(f"paragraph {i} " + "z" * 400 for i in range(30))
+
+    assert "".join(chunk_for_telegram(text)).replace("\n", "") == text.replace("\n", "")
+
+
+# ---------------------------------------------------------------- markdown
+
+
+def test_send_message_asks_for_markdown_when_told_to(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"result": {"message_id": 5}})
+
+    _transport().send_message("*bold*", markdown=True)
+
+    _url, payload, _timeout = urlopen.calls[0]
+    assert payload["parse_mode"] == "Markdown"
+
+
+def test_send_message_resends_unformatted_when_telegram_rejects_the_entities(
+    urlopen: _FakeUrlopen,
+) -> None:
+    # Most Markdown this tool sends was composed by an Engine, not by us: a stray
+    # `*` is a malformed entity and Telegram 400s the whole message. Losing the
+    # styling is fine; losing the brief the human waited for is not.
+    urlopen.queue(
+        urllib.error.HTTPError("url", 400, "Bad Request: can't parse entities", {}, None),
+        {"result": {"message_id": 7}},
+    )
+
+    message_id = _transport().send_message("an unbalanced * brief", markdown=True)
+
+    assert message_id == 7
+    first, second = urlopen.calls
+    assert first[1]["parse_mode"] == "Markdown"
+    assert "parse_mode" not in second[1]
+    assert second[1]["text"] == "an unbalanced * brief"
+
+
+def test_send_message_does_not_retry_a_plain_text_failure(urlopen: _FakeUrlopen) -> None:
+    # Only a parse failure is worth a second attempt; a plain send that 400s has
+    # some other problem and must surface, not be silently sent twice.
+    urlopen.queue(urllib.error.HTTPError("url", 400, "Bad Request", {}, None))
+
+    with pytest.raises(urllib.error.HTTPError):
+        _transport().send_message("plain")
+
+    assert len(urlopen.calls) == 1
+
+
+def test_send_message_does_not_swallow_a_non_400_markdown_failure(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue(urllib.error.HTTPError("url", 429, "Too Many Requests", {}, None))
+
+    with pytest.raises(urllib.error.HTTPError):
+        _transport().send_message("*bold*", markdown=True)
+
+    assert len(urlopen.calls) == 1
+
+
+# ---------------------------------------------------------------- chat action
+
+
+def test_send_chat_action_posts_the_action(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"result": True})
+
+    _transport().send_chat_action("typing", chat_id="42")
+
+    url, payload, _timeout = urlopen.calls[0]
+    assert url.endswith("/sendChatAction")
+    assert payload == {"chat_id": "42", "action": "typing"}
+
+
+def test_send_chat_action_swallows_a_network_error(urlopen: _FakeUrlopen) -> None:
+    # Purely cosmetic: a missing "typing…" must never take down a command that is
+    # otherwise working.
+    urlopen.queue(urllib.error.URLError("down"))
+
+    _transport().send_chat_action("typing")

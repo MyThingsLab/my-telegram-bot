@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from mythings.ledger import Ledger
 from mythings.policy import Action, Decision, Policy, PolicyResult
 
-from mytelegrambot.transport import TelegramTransport, describe
+from mytelegrambot.transport import TelegramTransport, chunk_for_telegram, describe
 
 _DEFAULT_TIMEOUT = 300.0
 _DEFAULT_INTERVAL = 0.5
@@ -24,6 +24,19 @@ def format_ask_message(action: Action) -> str:
     lines = [f"Action: {action.kind}"]
     lines += [f"  {k}: {v}" for k, v in sorted(action.payload.items())]
     return "\n".join(lines)
+
+
+def _send_prompt(transport: TelegramTransport, action: Action) -> int:
+    # An Action's payload is arbitrary and unbounded -- a diff, a file body -- so a
+    # prompt can run past Telegram's 4096-char cap. Sent as one message it would
+    # 400, and ask_human would fail closed to DENY without the human ever seeing
+    # the question it was asked. Split it, and hang the Allow/Deny buttons on the
+    # final chunk: that message_id is the one await_decision waits on, so it must
+    # be the one the buttons belong to.
+    chunks = chunk_for_telegram(format_ask_message(action))
+    for chunk in chunks[:-1]:
+        transport.send_message(chunk)
+    return transport.send_message(chunks[-1], inline=_ASK_BUTTONS)
 
 
 def await_decision(
@@ -70,7 +83,7 @@ def ask_human(
     message_id: int | None = None
     reply: str | None = None
     try:
-        message_id = transport.send_message(format_ask_message(action), inline=_ASK_BUTTONS)
+        message_id = _send_prompt(transport, action)
         reply = await_decision(ledger, message_id, timeout=timeout)
     except Exception as exc:  # any transport/API failure fails closed, never propagates
         print(f"mytelegrambot: transport error during ask, failing closed: {describe(exc)}")

@@ -7,7 +7,15 @@ from mythings.ledger import Ledger
 from mythings.policy import Action, Decision, PolicyResult
 from mythings.testers import TesterStore
 
-from conftest import OPERATOR_CHAT, FakeTransport, as_tester, callback_update, operator
+from conftest import (
+    OPERATOR_CHAT,
+    FakeTransport,
+    all_text,
+    as_tester,
+    callback_update,
+    operator,
+    replies,
+)
 from mytelegrambot import idea_command
 from mytelegrambot.authz import ChatAuthorizer
 from mytelegrambot.idea_command import close_idea, explore_idea, idea_buttons
@@ -90,7 +98,7 @@ def test_a_forged_non_numeric_idea_button_is_refused_not_crashed(tmp_path: Path)
         runner=lambda argv: calls.append(argv) or "",
     )
 
-    assert "no longer valid" in reply.text
+    assert "no longer valid" in all_text(reply)
     assert calls == []
 
 
@@ -196,13 +204,16 @@ def test_explore_idea_is_metered_and_refuses_an_exhausted_tester(
             repo="o/r",
         )
 
-    first = go()
+    sent = replies(go())
+    assert len(sent) == 2  # "exploring…" first, so the tap is visibly doing something
+    ack, first = sent
+    assert ack.inline is None
     assert "a deeper brief" in first.text
     assert first.inline == idea_buttons(5)  # still actionable
     assert store.get(tester.id).engine_used == 1
 
-    second = go()
-    assert "full allowance" in second.text
+    second = all_text(go())
+    assert "full allowance" in second
     assert calls["n"] == 1  # the Engine was never reached the second time
 
 
@@ -217,18 +228,20 @@ def test_explore_idea_flags_when_the_brief_could_not_be_posted(
 
     monkeypatch.setattr(idea_command, "explore", lambda **k: _Unposted())
 
-    reply = explore_idea(
-        CallbackAction(key="idea:explore", subject="5"),
-        as_tester(tester),
-        store=store,
-        github=None,
-        policy=_AllowAll(),
-        engine=None,
-        ledger=ledger,
-        repo="o/r",
+    reply = all_text(
+        explore_idea(
+            CallbackAction(key="idea:explore", subject="5"),
+            as_tester(tester),
+            store=store,
+            github=None,
+            policy=_AllowAll(),
+            engine=None,
+            ledger=ledger,
+            repo="o/r",
+        )
     )
 
-    assert "could not be posted" in reply.text
+    assert "could not be posted" in reply
 
 
 def test_explore_idea_refunds_when_the_engine_call_fails(
@@ -245,15 +258,17 @@ def test_explore_idea_refunds_when_the_engine_call_fails(
     monkeypatch.setattr(idea_command, "explore", boom)
 
     with pytest.raises(RuntimeError, match="engine exploded"):
-        explore_idea(
-            CallbackAction(key="idea:explore", subject="5"),
-            as_tester(tester),
-            store=store,
-            github=None,
-            policy=_AllowAll(),
-            engine=None,
-            ledger=ledger,
-            repo="o/r",
+        replies(
+            explore_idea(
+                CallbackAction(key="idea:explore", subject="5"),
+                as_tester(tester),
+                store=store,
+                github=None,
+                policy=_AllowAll(),
+                engine=None,
+                ledger=ledger,
+                repo="o/r",
+            )
         )
 
     assert store.get(tester.id).engine_used == 0
@@ -288,7 +303,7 @@ def test_a_tester_cannot_close_an_idea_they_did_not_file(tmp_path: Path) -> None
         runner=lambda argv: calls.append(argv) or "",
     )
 
-    assert "isn't one of yours" in reply.text
+    assert "isn't one of yours" in all_text(reply)
     assert calls == []  # gh never ran
 
 
@@ -330,7 +345,7 @@ def test_a_tester_cannot_explore_an_idea_they_did_not_file(
         repo="o/r",
     )
 
-    assert "isn't one of yours" in reply.text
+    assert "isn't one of yours" in all_text(reply)
     # Refused before the reservation, so it costs them nothing.
     assert store.get(tester.id).engine_used == 0
 
@@ -516,5 +531,35 @@ def test_a_forged_non_numeric_explore_button_is_refused_not_crashed(tmp_path: Pa
         repo="o/r",
     )
 
-    assert "no longer valid" in reply.text
+    assert "no longer valid" in all_text(reply)
     assert store.get(tester.id).engine_used == 0  # refused before the reservation
+
+
+def test_a_tap_is_answered_before_the_work_it_triggers(tmp_path: Path) -> None:
+    # Telegram spins the button until answerCallbackQuery lands, and the work
+    # behind a button is slow (an Engine call, or a `gh` round-trip). Answering
+    # after dispatch left the spinner going for the whole thing -- and a handler
+    # returning a plain Reply rather than a generator has already *run* by the time
+    # dispatch returns, so the answer has to come before dispatch, not just before
+    # the send.
+    order: list[str] = []
+
+    class _Recording(FakeTransport):
+        def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
+            order.append("answered")
+            super().answer_callback_query(callback_query_id)
+
+    def slow_close(action: CallbackAction, principal) -> Reply:
+        order.append("worked")  # stands in for `gh issue close`
+        return Reply("closed")
+
+    handle_batch(
+        [callback_update(1, message_id=3, data="idea:12:close")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=_Recording(),
+        authorizer=_authorizer(),
+        routes={},
+        callback_routes={"idea:close": slow_close},
+    )
+
+    assert order == ["answered", "worked"]

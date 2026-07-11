@@ -173,3 +173,34 @@ def test_since_query_does_not_consume_the_incremental_queue(tmp_path: Path) -> N
     assert incremental.entries_count == 2
     assert "old" in transport.sent[1][0]
     assert "recent" in transport.sent[1][0]
+
+
+def test_a_digest_past_telegrams_limit_is_split_rather_than_rejected(tmp_path: Path) -> None:
+    # A digest is as long as the backlog makes it. Sent as one message, a big
+    # enough backlog 400'd, held the cursor, and was retried identically forever --
+    # a digest that could never be delivered and only grew. Splitting is what stops
+    # that from being a permanent wedge.
+    ledger = Ledger(tmp_path / "l.jsonl")
+    for i in range(60):
+        ledger.record(
+            "myidea", "idea_filed", "success", detail="x" * 200, ts=f"2026-07-12T00:{i:02d}:00"
+        )
+    transport = FakeTransport()
+
+    result = notify(ledger, transport=transport)
+
+    assert result.outcome == "success"
+    assert len(transport.sent) > 1
+    assert all(len(text) <= 4096 for text, _inline in transport.sent)
+    assert result.message_id == 1  # the first message of the digest
+
+
+def test_a_digest_that_fits_is_still_one_message(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    ledger.record("myidea", "idea_filed", "success", detail="a small thing")
+    transport = FakeTransport()
+
+    result = notify(ledger, transport=transport)
+
+    assert len(transport.sent) == 1
+    assert result.outcome == "success"

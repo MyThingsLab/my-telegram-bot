@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 
 from mytelegrambot.authz import Principal
@@ -17,9 +17,12 @@ _CALLBACK_DATA_MAX = 64
 class Reply:
     # What a handler hands back: the text to send, plus optionally the buttons to
     # hang under it. Handlers never touch the transport, so this is the only way
-    # they can attach markup.
+    # they can attach markup. `markdown` asks the transport for Telegram's
+    # Markdown parse_mode; it falls back to plain text if Telegram rejects the
+    # entities, so setting it can never cost the message.
     text: str
     inline: InlineKeyboard | None = None
+    markdown: bool = False
 
 
 # A command handler takes the raw text after the leading "/word" plus the
@@ -27,11 +30,24 @@ class Reply:
 # press. Routes are registered in cli.py; adding one is a dict entry, no change
 # to this module.
 #
+# A handler returns either one Reply or an *iterator* of them, and the daemon
+# sends each as it arrives. That is what lets a handler answer before it is
+# finished: /idea files the GitHub issue in well under a second but then blocks
+# for a whole Engine call, so it yields the issue number immediately and the
+# explored brief when it has one, instead of leaving the human staring at a dead
+# chat for a minute. A handler still never touches the transport -- yielding is
+# the only way it can say "send this now".
+#
 # The Principal is not decoration: a handler that spends an Engine call has to
 # meter it against that tester's quota, and one that reads the ledger has to read
 # *their* ledger, not the operator's.
-CommandHandler = Callable[[str, Principal], Reply]
-CallbackHandler = Callable[["CallbackAction", Principal], Reply]
+Replies = Reply | Iterable[Reply]
+CommandHandler = Callable[[str, Principal], Replies]
+CallbackHandler = Callable[["CallbackAction", Principal], Replies]
+
+
+def as_replies(result: Replies) -> Iterator[Reply]:
+    return iter((result,)) if isinstance(result, Reply) else iter(result)
 
 
 @dataclass(frozen=True)
@@ -65,7 +81,11 @@ def parse_command(text: str) -> Command | None:
     if not text.startswith("/"):
         return None
     head, _, rest = text.partition(" ")
-    name = head[1:].lower()
+    # In a group, Telegram delivers an explicitly addressed command as
+    # "/idea@MyBot" -- the same command, and the only form its own autocomplete
+    # offers there. Without stripping the suffix it parses as an unknown name.
+    name, _, _bot = head[1:].partition("@")
+    name = name.lower()
     if not name:
         return None
     return Command(name=name, args=rest.strip())
@@ -91,26 +111,33 @@ def parse_callback(data: str) -> CallbackAction | None:
     return CallbackAction(key=f"{target}:{verb}", subject=subject)
 
 
-def dispatch(text: str, routes: dict[str, CommandHandler], principal: Principal) -> Reply | None:
-    # Non-command text and unrecognized commands are silently ignored -- no
-    # reply, no ledger noise for ordinary chat/typos in a channel that also
-    # carries no-Engine-call plumbing.
+def unknown_command(name: str) -> Reply:
+    return Reply(f"I don't know /{name}. Send /help to see what I can do.")
+
+
+def dispatch(
+    text: str, routes: dict[str, CommandHandler], principal: Principal
+) -> Iterator[Reply] | None:
+    # Ordinary chat is still ignored outright: this channel also carries notify
+    # digests and Allow/Deny prompts, and answering every stray line would make
+    # it unusable. A *slash* command is different -- it was typed deliberately,
+    # so a silent drop on a typo is indistinguishable from the bot being down.
     command = parse_command(text)
     if command is None:
         return None
     handler = routes.get(command.name)
     if handler is None:
-        return None
-    return handler(command.args, principal)
+        return iter((unknown_command(command.name),))
+    return as_replies(handler(command.args, principal))
 
 
 def dispatch_callback(
     data: str, routes: dict[str, CallbackHandler], principal: Principal
-) -> Reply | None:
+) -> Iterator[Reply] | None:
     action = parse_callback(data)
     if action is None:
         return None
     handler = routes.get(action.key)
     if handler is None:
         return None
-    return handler(action, principal)
+    return as_replies(handler(action, principal))

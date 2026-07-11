@@ -11,7 +11,7 @@ from mythings.ledger import Ledger
 from mythings.policy import ALLOW, Action, PolicyResult
 from mythings.testers import TesterStore
 
-from conftest import as_tester, operator
+from conftest import all_text, as_tester, operator, replies
 from mytelegrambot.guide_command import (
     handle_catalog,
     metered_wish,
@@ -107,14 +107,21 @@ def test_wish_spends_exactly_one_engine_call_and_offers_the_matched_tool(
     store = TesterStore(tmp_path / "t.db")
     tester, _ = store.register("ada", engine_quota=5, chat_id=999)
 
-    reply = metered_wish(
-        "tidy my books", as_tester(tester), store=store, guide=_guide(tmp_path, engine)
+    sent = replies(
+        metered_wish(
+            "tidy my books", as_tester(tester), store=store, guide=_guide(tmp_path, engine)
+        )
     )
 
     assert engine.calls == 1
     assert store.get(tester.id).engine_used == 1
-    assert "MyArchivist" in reply.text
-    datas = [d for row in reply.inline or () for _label, d in row]
+    # The wish blocks on an Engine call with nothing filed to hand over, so it
+    # says the work started before it starts waiting.
+    assert len(sent) == 2
+    thinking, answer = sent
+    assert thinking.inline is None
+    assert "MyArchivist" in answer.text
+    datas = [d for row in answer.inline or () for _label, d in row]
     assert "guide:my-archivist:trial" in datas
 
 
@@ -124,9 +131,11 @@ def test_wish_refuses_an_exhausted_tester_before_the_engine(tmp_path: Path) -> N
     tester, _ = store.register("ada", engine_quota=1, chat_id=999)
     store.reserve_engine_call(tester.id)  # already spent
 
-    reply = metered_wish("anything", as_tester(tester), store=store, guide=_guide(tmp_path, engine))
+    reply = all_text(
+        metered_wish("anything", as_tester(tester), store=store, guide=_guide(tmp_path, engine))
+    )
 
-    assert "full allowance" in reply.text
+    assert "full allowance" in reply
     assert engine.calls == 0
 
 
@@ -139,7 +148,7 @@ def test_wish_refunds_when_the_engine_call_raises(tmp_path: Path) -> None:
     tester, _ = store.register("ada", engine_quota=1, chat_id=999)
 
     with pytest.raises(RuntimeError, match="engine exploded"):
-        metered_wish("x", as_tester(tester), store=store, guide=_guide(tmp_path, Boom()))
+        replies(metered_wish("x", as_tester(tester), store=store, guide=_guide(tmp_path, Boom())))
 
     assert store.get(tester.id).engine_used == 0
 
@@ -148,9 +157,9 @@ def test_wish_without_text_asks_for_some_and_spends_nothing(tmp_path: Path) -> N
     store = TesterStore(tmp_path / "t.db")
     tester, _ = store.register("ada", engine_quota=1, chat_id=999)
 
-    reply = metered_wish("   ", as_tester(tester), store=store, guide=_guide(tmp_path))
+    reply = all_text(metered_wish("   ", as_tester(tester), store=store, guide=_guide(tmp_path)))
 
-    assert "Usage: /wish" in reply.text
+    assert "Usage: /wish" in reply
     assert store.get(tester.id).engine_used == 0
 
 
@@ -159,7 +168,7 @@ def test_the_operator_is_never_metered_for_wishes(tmp_path: Path) -> None:
     store = TesterStore(tmp_path / "t.db")
 
     for _ in range(3):
-        metered_wish("x", operator(), store=store, guide=_guide(tmp_path, engine))
+        replies(metered_wish("x", operator(), store=store, guide=_guide(tmp_path, engine)))
 
     assert engine.calls == 3
 
@@ -224,17 +233,13 @@ def test_trial_buttons_are_none_when_nothing_is_offered() -> None:
     assert trial_buttons(_catalog(), message) is None
 
 
-def test_render_truncates_a_reply_longer_than_telegrams_limit(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from mytelegrambot import guide_command
-
-    monkeypatch.setattr(guide_command, "_TELEGRAM_MAX_LEN", 60)
-
+def test_a_long_catalog_is_kept_whole_for_the_transport_to_chunk(tmp_path: Path) -> None:
+    # No truncation here any more: an over-long catalog is split across messages
+    # by the transport rather than having its tail thrown away.
     reply = handle_catalog("", operator(), guide=_guide(tmp_path))
 
-    assert len(reply.text) <= 60
-    assert "truncated" in reply.text
+    assert "truncated" not in reply.text
+    assert reply.markdown
 
 
 def test_render_includes_a_message_note(tmp_path: Path) -> None:

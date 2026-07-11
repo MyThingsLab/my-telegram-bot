@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
+import pytest
 from mythings.ledger import Ledger
 from mythings.policy import Action
 from mythings.testers import TesterStore
 
 from conftest import OPERATOR_CHAT, FakeTransport, callback_update, message_update
+from mytelegrambot import inbound
 from mytelegrambot.authz import ChatAuthorizer, Principal
 from mytelegrambot.inbound import handle_batch, last_seen_update_id, run_forever
 from mytelegrambot.policy import ask_human, await_decision
@@ -128,7 +131,10 @@ def test_non_text_update_is_ignored_without_a_reply(tmp_path: Path) -> None:
     assert transport.sent == []
 
 
-def test_unregistered_command_gets_no_reply(tmp_path: Path) -> None:
+def test_unregistered_command_is_nudged_toward_help(tmp_path: Path) -> None:
+    # It used to get nothing at all, which is indistinguishable from the bot being
+    # down. Ordinary chat is still ignored (see the test below); a slash command
+    # was typed on purpose.
     ledger = Ledger(tmp_path / "l.jsonl")
     transport = FakeTransport()
 
@@ -140,8 +146,10 @@ def test_unregistered_command_gets_no_reply(tmp_path: Path) -> None:
         routes={"echo": _echo},
     )
 
-    assert result.commands_routed == 0
-    assert transport.sent == []
+    assert result.commands_routed == 1
+    ((text, _inline),) = transport.sent
+    assert "/nosuchcommand" in text
+    assert "/help" in text
 
 
 def test_a_failed_reply_send_still_advances_the_cursor(tmp_path: Path) -> None:
@@ -278,3 +286,201 @@ def test_concurrent_ask_and_inbound_command_do_not_steal_each_others_updates(
     ask_result = results["ask"]
     assert ask_result.outcome == "allowed"  # type: ignore[union-attr]
     assert daemon_transport.sent[0][0] == "operator said hello"
+
+
+# ------------------------------------------------- feedback while a handler works
+#
+# /idea, /note and /wish each block on a full Engine call -- tens of seconds. The
+# daemon is what turns that into something a human can read as "working" rather
+# than "dead": a typing indicator held for the wait, and each reply sent the
+# moment the handler yields it rather than all at the end.
+
+
+def test_a_handlers_replies_are_sent_as_it_yields_them(tmp_path: Path) -> None:
+    def streaming(text: str, principal: Principal):
+        yield Reply("filed as #9")
+        yield Reply("here is the brief")
+
+    transport = FakeTransport()
+
+    handle_batch(
+        [message_update(1, "/idea a tool")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"idea": streaming},
+    )
+
+    assert [text for text, _inline in transport.sent] == ["filed as #9", "here is the brief"]
+
+
+def test_the_typing_indicator_is_held_while_a_handler_works(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(inbound, "_TYPING_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(inbound, "_TYPING_REFRESH_SECONDS", 0.01)
+
+    def slow(text: str, principal: Principal):
+        time.sleep(0.15)  # stands in for an Engine call
+        yield Reply("done")
+
+    transport = FakeTransport()
+
+    handle_batch(
+        [message_update(1, "/idea a tool")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"idea": slow},
+    )
+
+    assert ("typing", OPERATOR_CHAT) in transport.actions
+    # Refreshed, not sent once: Telegram clears the indicator after ~5s, so a
+    # minute-long Engine call would otherwise go quiet halfway through.
+    assert transport.actions.count(("typing", OPERATOR_CHAT)) > 1
+
+
+def test_an_instant_handler_shows_no_typing_indicator(tmp_path: Path) -> None:
+    # Every pull is wrapped, including the one that returns StopIteration. Sending
+    # the action immediately would leave a phantom "typing…" hanging after the last
+    # message, promising more that is never coming.
+    transport = FakeTransport()
+
+    handle_batch(
+        [message_update(1, "/echo hi")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"echo": _echo},
+    )
+
+    assert transport.sent[0][0] == "operator said hi"
+    assert transport.actions == []
+
+
+def test_a_reply_past_telegrams_limit_is_split_with_the_buttons_on_the_last_chunk(
+    tmp_path: Path,
+) -> None:
+    # This is the bug that mattered: an explored brief longer than 4096 chars used
+    # to be truncated, throwing away the tail the human waited a whole Engine call
+    # for.
+    buttons = ((("Explore deeper", "idea:9:explore"),),)
+
+    def long_reply(text: str, principal: Principal) -> Reply:
+        return Reply("\n\n".join("x" * 1000 for _ in range(10)), inline=buttons)
+
+    transport = FakeTransport()
+
+    handle_batch(
+        [message_update(1, "/idea a tool")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"idea": long_reply},
+    )
+
+    assert len(transport.sent) > 1
+    assert all(len(text) <= 4096 for text, _inline in transport.sent)
+    inlines = [inline for _text, inline in transport.sent]
+    assert inlines[-1] == buttons  # actionable exactly once, under the final chunk
+    assert all(inline is None for inline in inlines[:-1])
+
+
+def test_a_handler_crash_never_puts_the_exception_in_the_chat(tmp_path: Path) -> None:
+    # A traceback is not something the reader can act on, and a tester is not
+    # entitled to this tool's internals. The exception goes to the log instead.
+    def boom(text: str, principal: Principal) -> Reply:
+        raise RuntimeError("gh token 'ghp_secret' rejected")
+
+    transport = FakeTransport()
+
+    result = handle_batch(
+        [message_update(1, "/idea a tool")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"idea": boom},
+    )
+
+    ((text, _inline),) = transport.sent
+    assert "ghp_secret" not in text
+    assert "RuntimeError" not in text
+    assert "went wrong" in text
+    assert result.commands_routed == 1  # the update is done with, not retried
+
+
+def test_a_crash_midway_through_a_stream_still_reports_what_already_landed(
+    tmp_path: Path,
+) -> None:
+    # /idea files the issue, yields the number, then explodes in explore(). The
+    # human must still be told the idea was captured.
+    def half_broken(text: str, principal: Principal):
+        yield Reply("filed as #9")
+        raise RuntimeError("engine exploded")
+
+    transport = FakeTransport()
+
+    handle_batch(
+        [message_update(1, "/idea a tool")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"idea": half_broken},
+    )
+
+    sent = [text for text, _inline in transport.sent]
+    assert sent[0] == "filed as #9"
+    assert "went wrong" in sent[1]
+
+
+def test_ordinary_chat_is_still_ignored(tmp_path: Path) -> None:
+    # The nudge is for slash commands only. This channel also carries digests and
+    # Allow/Deny prompts; answering every stray line would make it unusable.
+    transport = FakeTransport()
+
+    result = handle_batch(
+        [message_update(1, "hello there")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"echo": _echo},
+    )
+
+    assert result.commands_routed == 0
+    assert transport.sent == []
+
+
+def test_a_failing_typing_indicator_never_costs_the_reply(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The indicator is cosmetic. If sendChatAction is broken, the command it was
+    # decorating must still land -- and the failing refresh loop must give up
+    # rather than retry into a wall for the length of an Engine call.
+    attempts = {"n": 0}
+
+    class _NoChatAction(FakeTransport):
+        def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None:
+            attempts["n"] += 1
+            raise RuntimeError("sendChatAction is down")
+
+    monkeypatch.setattr(inbound, "_TYPING_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(inbound, "_TYPING_REFRESH_SECONDS", 0.01)
+
+    def slow(text: str, principal: Principal):
+        time.sleep(0.15)  # long enough that the keep-alive certainly fires
+        yield Reply("done anyway")
+
+    transport = _NoChatAction()
+
+    result = handle_batch(
+        [message_update(1, "/idea a tool")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"idea": slow},
+    )
+
+    assert attempts["n"] > 0  # the failure path was actually taken
+    assert attempts["n"] <= 2  # one per pull: it gave up, it did not spin
+    assert result.commands_routed == 1
+    assert transport.sent[0][0] == "done anyway"

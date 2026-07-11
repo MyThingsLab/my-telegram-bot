@@ -89,7 +89,11 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   the same `Policy` seam `file_idea` does, failing closed on `ASK` because the
   daemon is unattended. Every tap is answered (`answerCallbackQuery`) even when
   unrouted or failed, or the button spins forever; that answer is cosmetic and
-  must never undo an action that already happened.
+  must never undo an action that already happened. It is sent **before dispatch,
+  not after** — the work behind a button is slow (an Engine call for `Explore
+  deeper`, a `gh` round-trip for `Close idea`), and a handler that returns a plain
+  `Reply` rather than a generator has already run by the time `dispatch_callback`
+  returns, so answering afterwards leaves the spinner going for the whole thing.
 - **One consumer owns the update queue.** `mytelegrambot run` is a long-lived
   daemon (systemd `Type=simple`, `Restart=always`) and its `fetch_updates` is
   the *only* `getUpdates` caller in the tool. `poll_decision` is gone: `ask`
@@ -104,8 +108,53 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   not reintroduce a second `getUpdates` caller.** `allow`/`deny` are the only
   `callback_data` values the daemon never routes to a handler — `policy`
   exports `ASK_DECISIONS` so the button and the router cannot disagree about
-  what an approval looks like. Handlers return a `router.Reply` (text plus an
-  optional inline keyboard) and never touch the transport themselves.
+  what an approval looks like.
+- **A handler answers before it is finished.** A handler returns a
+  `router.Reply` (text plus an optional inline keyboard) *or an iterator of
+  them*, and `inbound._drain` sends each the moment it is yielded. It still
+  never touches the transport: yielding is the only way it can say "send this
+  now". This exists because `/idea`, `/note` and `/wish` each block on a whole
+  Engine call — tens of seconds — and a chat with nothing in it is
+  indistinguishable from a dead bot. `/idea` and `/note` file their GitHub issue
+  *before* the Engine call, so they hand over the issue number and URL
+  immediately and the brief when it exists; if the Engine call then dies, the
+  human still knows the capture succeeded. Around every wait for the next reply
+  the daemon holds a `sendChatAction("typing")` keep-alive (Telegram clears the
+  indicator after ~5s, so it is refreshed on a daemon thread). The indicator is
+  **cosmetic by construction**: every send is best-effort and a failure must
+  never cost the reply it was decorating. A handler that raises mid-stream keeps
+  the replies that already landed and adds one flat apology — the exception goes
+  to the log, **never into the chat**: a traceback is not something the reader
+  can act on, and a tester is not entitled to this tool's internals.
+- **Telegram's 4096-char cap is handled by splitting, never truncating.**
+  `transport.chunk_for_telegram` is the single implementation (it used to be
+  copy-pasted into three command modules, each *truncating*). Two things this
+  tool relays are unbounded and neither is ours to shorten: an Engine-composed
+  brief — the tail is precisely what the human waited a full Engine call for —
+  and a `notify` digest, which is as long as the ledger backlog makes it. The
+  digest case was a **liveness bug**, not just cosmetics: one over-long message
+  was rejected with a 400, the failure was swallowed, the cursor held, and the
+  same undeliverable digest was retried forever while the backlog only grew. The
+  third unbounded relay is an `ask` prompt, whose `Action` payload can be a diff
+  or a file body: unsplit, it 400'd and `ask_human` fell closed to `DENY` without
+  the human ever seeing the question. Buttons hang under the **final chunk only**,
+  where they read as acting on the whole reply — and for `ask` that is load-bearing,
+  not cosmetic: the final chunk's `message_id` is the one `await_decision` waits on,
+  so it must be the one the Allow/Deny buttons belong to.
+- **Markdown is a preference, never a risk to the message.** `Reply.markdown`
+  asks the transport for `parse_mode: Markdown`. Most text rendered this way was
+  composed by an *Engine*, not by us, so a stray `*` or `_` is a malformed entity
+  that Telegram 400s — and losing a brief to a styling error would be absurd. The
+  transport therefore retries a rejected Markdown send once as plain text. Only a
+  400 on a Markdown send is retried: any other failure surfaces.
+- **Ordinary chat is ignored; a mistyped command is not.** Plain text with no
+  leading `/` gets no reply — this channel also carries notify digests and
+  Allow/Deny prompts, and answering every stray line would make it unusable. An
+  *unrecognized slash command* is different: it was typed deliberately, so silence
+  is indistinguishable from the bot being down. It gets one flat nudge toward
+  `/help` (`router.unknown_command`) and no ledger entry. Note `parse_command`
+  strips the `@botname` suffix Telegram appends in group chats — its own
+  autocomplete emits `/idea@MyBot` there, which used to parse as an unknown name.
 - **Authorization is not the transport's job.** `fetch_updates` returns every
   update Telegram sends; `authz.ChatAuthorizer` decides who may be heard.
   The operator (`TELEGRAM_CHAT_ID`) is authorized *by configuration, never by

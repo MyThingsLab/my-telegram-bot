@@ -10,6 +10,12 @@ from mytelegrambot.router import InlineKeyboard
 
 _API = "https://api.telegram.org/bot{token}/{method}"
 
+# Telegram rejects a sendMessage whose text exceeds this with a 400. Anything
+# relaying content this tool does not author -- an Engine-composed brief, a
+# digest of an unbounded ledger backlog -- can cross it, so callers chunk rather
+# than assume.
+TELEGRAM_MAX_LEN = 4096
+
 
 class TelegramTransport(Protocol):
     def send_message(
@@ -19,6 +25,7 @@ class TelegramTransport(Protocol):
         chat_id: str | None = None,
         inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
+        markdown: bool = False,
     ) -> int: ...
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]: ...
@@ -26,6 +33,32 @@ class TelegramTransport(Protocol):
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None: ...
 
     def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
+
+    def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None: ...
+
+
+def chunk_for_telegram(text: str, *, limit: int = TELEGRAM_MAX_LEN) -> list[str]:
+    # An explored brief is the whole payload of /idea, and a digest is the whole
+    # payload of notify: truncating either throws away the part the human waited
+    # for. Split instead, preferring a paragraph break, then a line break, and
+    # only hard-cutting a single oversized line.
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        cut = window.rfind("\n\n")
+        if cut <= 0:
+            cut = window.rfind("\n")
+        if cut <= 0:
+            cut = limit
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 class HTTPTelegramTransport:
@@ -51,8 +84,11 @@ class HTTPTelegramTransport:
         chat_id: str | None = None,
         inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
+        markdown: bool = False,
     ) -> int:
         payload: dict = {"chat_id": chat_id or self._chat_id, "text": text}
+        if markdown:
+            payload["parse_mode"] = "Markdown"
         if inline is not None:
             # Per-message inline buttons: taps arrive as `callback_query` updates
             # carrying the button's callback_data. Used by `ask` (Allow/Deny) and
@@ -73,8 +109,29 @@ class HTTPTelegramTransport:
                 "resize_keyboard": True,
                 "is_persistent": True,
             }
-        result = self._call("sendMessage", payload)
+        try:
+            result = self._call("sendMessage", payload)
+        except urllib.error.HTTPError as exc:
+            if not markdown or exc.code != 400:
+                raise
+            # Most text this tool renders as Markdown was composed by an Engine,
+            # not by us: a stray `*` or `_` is a malformed entity and Telegram
+            # rejects the whole message. The content matters more than the
+            # styling, so drop the styling rather than lose the message.
+            print("mytelegrambot: markdown rejected, resending unformatted")
+            payload.pop("parse_mode")
+            result = self._call("sendMessage", payload)
         return result["result"]["message_id"]
+
+    def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None:
+        # Drives the "typing…" indicator. Telegram clears it after ~5s or as soon
+        # as a message lands, so a caller that blocks longer than that has to
+        # refresh it. Purely cosmetic: a failure here must never take down a
+        # command that is otherwise working.
+        try:
+            self._call("sendChatAction", {"chat_id": chat_id or self._chat_id, "action": action})
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"mytelegrambot: sendChatAction failed (cosmetic): {describe(exc)}")
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
         # Registers the bot-wide command list Telegram shows as autocomplete and

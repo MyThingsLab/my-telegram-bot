@@ -8,7 +8,7 @@ from mythings.github import GitHub
 from mythings.ledger import Ledger
 from mythings.testers import TesterStore
 
-from conftest import as_tester, operator
+from conftest import all_text, as_tester, operator
 from mytelegrambot import idea_command
 from mytelegrambot.idea_command import metered_idea
 from mytelegrambot.router import Reply
@@ -21,24 +21,28 @@ from mytelegrambot.router import Reply
 def _call(monkeypatch: pytest.MonkeyPatch, principal, store, tmp_path: Path, *, boom=False):
     calls = {"n": 0}
 
-    def fake_handle_idea(text: str, **kwargs: object) -> Reply:
+    def fake_handle_idea(text: str, **kwargs: object) -> list[Reply]:
         calls["n"] += 1
         if boom:
             raise RuntimeError("engine exploded")
-        return Reply("brief")
+        return [Reply("brief")]
 
     monkeypatch.setattr(idea_command, "handle_idea", fake_handle_idea)
-    reply = metered_idea(
-        "a tool",
-        principal,
-        store=store,
-        github=GitHub(repo="o/r"),
-        policy=None,
-        engine=NoopEngine(),
-        ledger=Ledger(tmp_path / "l.jsonl"),
-        repo="o/r",
+    # metered_idea is a generator: nothing runs, and nothing is metered, until the
+    # daemon drains it -- which is exactly what all_text does here.
+    reply = all_text(
+        metered_idea(
+            "a tool",
+            principal,
+            store=store,
+            github=GitHub(repo="o/r"),
+            policy=None,
+            engine=NoopEngine(),
+            ledger=Ledger(tmp_path / "l.jsonl"),
+            repo="o/r",
+        )
     )
-    return reply.text, calls["n"]
+    return reply, calls["n"]
 
 
 def test_operator_is_never_metered(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

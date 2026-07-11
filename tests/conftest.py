@@ -4,9 +4,21 @@ from mythings.ledger import LedgerEntry
 from mythings.testers import Tester
 
 from mytelegrambot.authz import OPERATOR, TESTER, Principal
-from mytelegrambot.router import InlineKeyboard
+from mytelegrambot.router import InlineKeyboard, Replies, Reply, as_replies
 
 OPERATOR_CHAT = "chat"
+
+
+def replies(result: Replies) -> list[Reply]:
+    # Handlers stream: /idea acknowledges the filed issue, then sends the brief.
+    # Most tests care about one of those, so drain the stream once and index.
+    return list(as_replies(result))
+
+
+def all_text(result: Replies) -> str:
+    # For assertions that only ask "did the human end up being told X", without
+    # caring which of the streamed messages carried it.
+    return "\n".join(reply.text for reply in replies(result))
 
 
 def entry(tool: str, kind: str, outcome: str, detail: str, *, ts: str) -> LedgerEntry:
@@ -56,6 +68,8 @@ class FakeTransport:
         self.commands_set: list[tuple[tuple[str, str], ...]] = []
         self.fetched: list[tuple[int | None, float]] = []
         self.answered: list[str] = []
+        self.markdown: list[bool] = []
+        self.actions: list[tuple[str, str | None]] = []
         self._updates = updates or []
         self._next_id = 1
 
@@ -66,13 +80,18 @@ class FakeTransport:
         chat_id: str | None = None,
         inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
+        markdown: bool = False,
     ) -> int:
         self.sent.append((text, inline))
         self.sent_to.append(chat_id)
         self.keyboards.append(keyboard)
+        self.markdown.append(markdown)
         message_id = self._next_id
         self._next_id += 1
         return message_id
+
+    def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None:
+        self.actions.append((action, chat_id))
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
         self.commands_set.append(commands)
@@ -96,7 +115,11 @@ class ErrorTransport:
         chat_id: str | None = None,
         inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
+        markdown: bool = False,
     ) -> int:
+        raise RuntimeError("telegram API unreachable")
+
+    def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None:
         raise RuntimeError("telegram API unreachable")
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:

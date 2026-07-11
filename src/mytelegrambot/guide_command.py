@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from myguide.catalog import Catalog
 from myguide.guide import Guide, GuideError
 from myguide.render import Message
@@ -22,20 +24,11 @@ from mytelegrambot.router import CallbackAction, InlineKeyboard, Reply, encode_a
 # MyServer, and fails closed without them -- there is nothing here a tester could
 # do with it but hit a wall.
 
-_TELEGRAM_MAX_LEN = 4096
-
 _QUOTA_EXHAUSTED = (
     "You've used your full allowance of Engine calls.\n"
     "Ask the operator to raise your quota if you need more."
 )
 _UNKNOWN_TOOL = "I don't know that tool."
-
-
-def _truncate_for_telegram(text: str) -> str:
-    if len(text) <= _TELEGRAM_MAX_LEN:
-        return text
-    marker = "\n…[truncated]"
-    return text[: _TELEGRAM_MAX_LEN - len(marker)] + marker
 
 
 def trial_buttons(catalog: Catalog, message: Message) -> InlineKeyboard | None:
@@ -52,11 +45,15 @@ def trial_buttons(catalog: Catalog, message: Message) -> InlineKeyboard | None:
 
 
 def _render(catalog: Catalog, message: Message) -> Reply:
-    parts = [message.title, "", *message.lines]
+    # The title is the card's heading; bolding it is what makes a catalog of a
+    # dozen tools skimmable on a phone instead of one undifferentiated wall.
+    parts = [f"*{message.title}*", "", *message.lines]
     if message.note:
         parts += ["", message.note]
     return Reply(
-        _truncate_for_telegram("\n".join(parts).strip()), inline=trial_buttons(catalog, message)
+        "\n".join(parts).strip(),
+        inline=trial_buttons(catalog, message),
+        markdown=True,
     )
 
 
@@ -72,19 +69,27 @@ def metered_wish(
     *,
     store: TesterStore | None,
     guide: Guide,
-) -> Reply:
+) -> Iterator[Reply]:
     if not text.strip():
-        return Reply("Usage: /wish <what you'd like to do, in your own words>")
+        yield Reply("Usage: /wish <what you'd like to do, in your own words>")
+        return
     # Same contract as metered_idea: reserve before spending, refund only when
     # the call never happened. The operator is never metered.
     if not reserve_engine_call(principal, store):
-        return Reply(_QUOTA_EXHAUSTED)
+        yield Reply(_QUOTA_EXHAUSTED)
+        return
+
+    # Nothing is filed here, so there is no receipt to hand over -- but the Engine
+    # call still costs a minute, and a wish is the first thing a newcomer ever
+    # types. Silence is the worst possible first impression.
+    yield Reply("🔮 Thinking about what the fleet can do for that…")
+
     try:
         _wish, message = guide.wish(text)
     except Exception:
         release_engine_call(principal, store)
         raise
-    return _render(guide.catalog, message)
+    yield _render(guide.catalog, message)
 
 
 def trial_tool(action: CallbackAction, _principal: Principal, *, guide: Guide) -> Reply:
