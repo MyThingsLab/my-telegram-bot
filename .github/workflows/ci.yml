@@ -29,6 +29,9 @@ jobs:
         run: |
           pip install "my-things-core @ git+https://github.com/${{ github.repository_owner }}/my-things-core@main"
           pip install "my-guard @ git+https://github.com/${{ github.repository_owner }}/my-guard@main"
+          # my-idea@main now depends on my-librarian, which is not on PyPI, so pip
+          # cannot resolve it from the git URL alone. Install it first.
+          pip install --no-deps "my-librarian @ git+https://github.com/${{ github.repository_owner }}/my-librarian@main"
           pip install "my-idea @ git+https://github.com/${{ github.repository_owner }}/my-idea@main"
           pip install "my-notes @ git+https://github.com/${{ github.repository_owner }}/my-notes@main"
           pip install "my-guide @ git+https://github.com/${{ github.repository_owner }}/my-guide@main"
