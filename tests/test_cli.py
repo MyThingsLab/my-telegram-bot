@@ -144,7 +144,17 @@ def test_run_wires_the_daemon_with_routes_and_an_authorizer(
     code = cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
 
     assert code == 0
-    assert set(captured["routes"]) == {"idea", "note", "catalog", "wish", "status", "help", "start"}
+    assert set(captured["routes"]) == {
+        "idea",
+        "note",
+        "catalog",
+        "wish",
+        "status",
+        "halt",
+        "resume",
+        "help",
+        "start",
+    }
     authorizer = captured["authorizer"]
     assert authorizer.authorize("chat").is_operator
     assert authorizer.authorize("999") is None  # no --testers-db: operator only
@@ -489,3 +499,32 @@ def test_run_wires_the_wish_route_through_the_metered_handler(
     assert reply.text == "wished"
     assert seen["text"] == "tidy my books"
     assert seen["store"] is None
+
+
+def test_the_daemon_never_escalates_an_ask_through_itself(monkeypatch) -> None:
+    # The deadlock this prevents:
+    #
+    # MyGuard escalates an ASK by shelling out to $MYTHINGS_ASK_CMD -- which is
+    # `mytelegrambot ask`, which blocks waiting for the `kind=callback` ledger entry
+    # that *this daemon* writes when the human taps. The daemon is single-threaded,
+    # so it would be sitting inside the handler that triggered the ask, unable to
+    # fetch the update that answers it. It would hang for the full ask timeout and
+    # then DENY -- and because this process is also the fleet's ask channel, every
+    # worker's escalation would stall behind it.
+    #
+    # A bare Guard() picks the channel up from the environment, so the daemon has to
+    # pass ask=None explicitly. This test fails if anyone "simplifies" it back.
+    from myguard import Guard
+
+    monkeypatch.setenv("MYTHINGS_ASK_CMD", "mytelegrambot ask")
+
+    # A Guard built the ordinary way would escalate...
+    assert Guard().ask is not None
+    # ...so the daemon must not build one the ordinary way.
+    assert Guard(ask=None).ask is None
+
+    source = Path(cli.__file__).read_text()
+    assert '"guard": Guard(ask=None)' in source, (
+        "the daemon must build its Guard with ask=None or it will deadlock against "
+        "itself on any ASK"
+    )
