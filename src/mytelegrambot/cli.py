@@ -16,6 +16,12 @@ from mythings.policy import Action, Decision
 from mythings.testers import TesterStore
 
 from mytelegrambot.authz import ChatAuthorizer, Principal, ledger_for
+from mytelegrambot.blocker_command import (
+    handle_blocker_retry,
+    handle_blocker_skip,
+    handle_blocker_take,
+    send_blocker_alert,
+)
 from mytelegrambot.guide_command import handle_catalog, metered_wish, trial_tool
 from mytelegrambot.halt_command import HaltControl, handle_halt, handle_resume
 from mytelegrambot.help_command import help_reply
@@ -172,12 +178,24 @@ def build_callback_routes(
     def spend_raise(action: CallbackAction, principal: Principal) -> Reply:
         return handle_spend_raise(action, principal, control=halt, policy=guard, ledger=ledger)
 
+    def blocker_retry(action: CallbackAction, principal: Principal) -> Reply:
+        return handle_blocker_retry(action, principal, ledger=ledger)
+
+    def blocker_skip(action: CallbackAction, principal: Principal) -> Reply:
+        return handle_blocker_skip(action, principal, ledger=ledger)
+
+    def blocker_take(action: CallbackAction, principal: Principal) -> Reply:
+        return handle_blocker_take(action, principal, ledger=ledger)
+
     return {
         "idea:explore": explore,
         "idea:close": close,
         "guide:trial": trial,
         "spend:halt": spend_halt,
         "spend:raise": spend_raise,
+        "blocker:retry": blocker_retry,
+        "blocker:skip": blocker_skip,
+        "blocker:take": blocker_take,
     }
 
 
@@ -237,6 +255,15 @@ def main(argv: list[str] | None = None) -> int:
     alert.add_argument("--cap", type=float, required=True)
     alert.add_argument("--raise-to", type=float, required=True)
     alert.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
+
+    blocker = sub.add_parser(
+        "escalate-blocker",
+        help="push a needs_human blocker with Retry / Skip / I'll take it buttons and exit",
+    )
+    blocker.add_argument("--candidate", required=True)
+    blocker.add_argument("--detail", default="")
+    blocker.add_argument("--attempt", type=int, default=0)
+    blocker.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
 
     run = sub.add_parser(
         "run", help="run the long-lived poller: the sole owner of Telegram's update queue"
@@ -311,6 +338,14 @@ def main(argv: list[str] | None = None) -> int:
             transport=transport, ledger=ledger,
         )
         print(f"spend alert pushed: ${args.spent:.2f} of ${args.cap:.2f}/day")
+        return 0
+
+    if args.cmd == "escalate-blocker":
+        send_blocker_alert(
+            candidate=args.candidate, detail=args.detail, attempt=args.attempt,
+            transport=transport, ledger=ledger,
+        )
+        print(f"blocker alert pushed for {args.candidate}")
         return 0
 
     if args.cmd == "run":
