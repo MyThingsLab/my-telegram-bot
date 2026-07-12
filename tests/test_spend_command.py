@@ -182,6 +182,56 @@ def test_a_stale_raise_button_does_not_crash(tmp_path: Path) -> None:
     assert not seen.exists()
 
 
+def test_spend_halt_denied_by_policy_never_runs_the_command(tmp_path: Path) -> None:
+    control, seen = _recording_control(tmp_path)
+    ledger = Ledger(tmp_path / "l.jsonl")
+
+    reply = handle_spend_halt(
+        CallbackAction(key="spend:halt", subject="now"),
+        operator(),
+        control=control,
+        policy=_DenyAll(),
+        ledger=ledger,
+    )
+
+    assert "denied by policy" in reply.text
+    assert not seen.exists()
+
+
+def test_a_failing_halt_command_is_reported_as_a_failure(tmp_path: Path) -> None:
+    control, _ = _recording_control(tmp_path, exit_code=1, output="could not write marker")
+    ledger = Ledger(tmp_path / "l.jsonl")
+
+    reply = handle_spend_halt(
+        CallbackAction(key="spend:halt", subject="now"),
+        operator(),
+        control=control,
+        policy=_AllowAll(),
+        ledger=ledger,
+    )
+
+    assert "Couldn't halt" in reply.text
+    assert "could not write marker" in reply.text
+    assert ledger.read(kind="halt")[0].outcome == "failure"
+
+
+def test_a_failing_raise_command_is_reported_as_a_failure(tmp_path: Path) -> None:
+    control, _ = _recording_control(tmp_path, exit_code=1, output="could not write override")
+    ledger = Ledger(tmp_path / "l.jsonl")
+
+    reply = handle_spend_raise(
+        CallbackAction(key="spend:raise", subject="30.00"),
+        operator(),
+        control=control,
+        policy=_AllowAll(),
+        ledger=ledger,
+    )
+
+    assert "Couldn't raise the cap" in reply.text
+    assert "could not write override" in reply.text
+    assert ledger.read(kind="raise_cap")[0].outcome == "failure"
+
+
 def test_an_unconfigured_control_says_so_rather_than_pretending(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "l.jsonl")
 

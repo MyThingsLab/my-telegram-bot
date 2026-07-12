@@ -126,6 +126,28 @@ def test_ask_timeout_exits_nonzero(monkeypatch: pytest.MonkeyPatch, ledger_path:
     assert code == 1
 
 
+def test_alert_spend_pushes_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    transport = FakeTransport()
+    _use_transport(monkeypatch, transport)
+
+    code = cli.main(
+        [
+            "alert-spend",
+            "--spent", "16.00",
+            "--cap", "20.00",
+            "--raise-to", "30.00",
+            "--ledger", str(ledger_path),
+        ]
+    )
+
+    assert code == 0
+    assert "$16.00 of $20.00" in capsys.readouterr().out
+    assert len(transport.sent) == 1
+    assert Ledger(ledger_path).read(kind="spend_alert")[0].outcome == "success"
+
+
 def _captured_run(monkeypatch: pytest.MonkeyPatch) -> dict:
     captured: dict = {}
 
@@ -351,6 +373,16 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
     assert callback_routes["idea:close"](CallbackAction("idea:close", "12"), who).text == "closed"
     assert seen["explore"] == (12, "o/r")
     assert seen["close"] == (12, "o/r")
+
+    # No --halt-cmd was passed, so both spend buttons hit the "not configured"
+    # path -- still enough to prove the wrapper wiring hands off to the real
+    # handlers rather than dead code sitting unreached.
+    assert "isn't wired up" in callback_routes["spend:halt"](
+        CallbackAction("spend:halt", "now"), who
+    ).text
+    assert "isn't wired up" in callback_routes["spend:raise"](
+        CallbackAction("spend:raise", "30.00"), who
+    ).text
 
 
 def test_testers_pending_lists_knocks_with_a_ready_to_paste_command(
