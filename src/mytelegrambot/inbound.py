@@ -17,6 +17,7 @@ from mytelegrambot.router import (
     dispatch,
     dispatch_callback,
 )
+from mytelegrambot.threads import anchor_for, remember_anchor
 from mytelegrambot.transport import (
     Callback,
     TelegramTransport,
@@ -89,19 +90,28 @@ class BatchResult:
     dropped: int
 
 
-def _send(transport: TelegramTransport, reply: Reply, principal: Principal) -> None:
+def _send(
+    transport: TelegramTransport, reply: Reply, principal: Principal, *, ledger: Ledger
+) -> None:
     # An explored brief routinely runs past Telegram's 4096-char cap. Splitting it
     # keeps the tail the human actually waited for; the buttons hang under the
     # final chunk, where they read as acting on the whole reply.
+    #
+    # thread_subject chains this reply onto whatever was last sent about the same
+    # subject (e.g. every reply about "idea:12"), so a private DM chat -- which has
+    # no native message threads -- doesn't read as one flat, unbroken scroll once
+    # the fleet has dozens of repos each generating their own events.
+    reply_to = anchor_for(ledger, reply.thread_subject) if reply.thread_subject else None
     chunks = chunk_for_telegram(reply.text)
     for index, chunk in enumerate(chunks):
         is_last = index == len(chunks) - 1
         try:
-            transport.send_message(
+            message_id = transport.send_message(
                 chunk,
                 chat_id=principal.chat_id,
                 inline=reply.inline if is_last else None,
                 markdown=reply.markdown,
+                reply_to_message_id=reply_to,
             )
         except Exception as exc:
             # The handler's side effects (e.g. an idea already filed on GitHub)
@@ -111,6 +121,12 @@ def _send(transport: TelegramTransport, reply: Reply, principal: Principal) -> N
             # channel that just rejected one.
             print(f"mytelegrambot: reply send failed: {describe(exc)}")
             return
+        if reply.thread_subject:
+            # Every later chunk in *this* reply chains onto the one before it, and
+            # the next reply chains onto whichever chunk landed last -- the anchor
+            # always points at the most recent message on the subject.
+            remember_anchor(ledger, reply.thread_subject, message_id)
+            reply_to = message_id
 
 
 @contextmanager
@@ -147,7 +163,9 @@ def _typing(transport: TelegramTransport, principal: Principal) -> Iterator[None
         thread.join(timeout=1.0)
 
 
-def _drain(replies: Iterator[Reply], *, transport: TelegramTransport, principal: Principal) -> bool:
+def _drain(
+    replies: Iterator[Reply], *, transport: TelegramTransport, principal: Principal, ledger: Ledger
+) -> bool:
     # A handler yields as it goes, so each reply is sent the moment it exists
     # rather than at the end. Its body runs *between* our next() calls, which is
     # exactly where the typing indicator belongs -- and where an exception will
@@ -161,9 +179,9 @@ def _drain(replies: Iterator[Reply], *, transport: TelegramTransport, principal:
             return sent_any
         except Exception as exc:
             print(f"mytelegrambot: command handling failed, not retried: {describe(exc)}")
-            _send(transport, Reply(_HANDLER_FAILED), principal)
+            _send(transport, Reply(_HANDLER_FAILED), principal, ledger=ledger)
             return True
-        _send(transport, reply, principal)
+        _send(transport, reply, principal, ledger=ledger)
         sent_any = True
 
 
@@ -255,7 +273,7 @@ def _handle_callback(
 
     if replies is None:
         return False
-    return _drain(replies, transport=transport, principal=principal)
+    return _drain(replies, transport=transport, principal=principal, ledger=ledger)
 
 
 def handle_batch(
@@ -310,7 +328,7 @@ def handle_batch(
         if replies is None:
             continue
         routed += 1
-        _drain(replies, transport=transport, principal=principal)
+        _drain(replies, transport=transport, principal=principal, ledger=ledger)
 
     return BatchResult(len(updates), routed, callbacks, dropped)
 

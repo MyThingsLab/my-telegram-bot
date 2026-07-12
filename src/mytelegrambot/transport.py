@@ -26,6 +26,7 @@ class TelegramTransport(Protocol):
         inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
         markdown: bool = False,
+        reply_to_message_id: int | None = None,
     ) -> int: ...
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]: ...
@@ -93,10 +94,20 @@ class HTTPTelegramTransport:
         inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
         markdown: bool = False,
+        reply_to_message_id: int | None = None,
     ) -> int:
         payload: dict = {"chat_id": chat_id or self._chat_id, "text": text}
         if markdown:
             payload["parse_mode"] = "Markdown"
+        if reply_to_message_id is not None:
+            # Telegram silently drops a reply-to targeting a message that no
+            # longer exists (deleted, or a different chat) rather than erroring,
+            # so this is best-effort exactly like the cosmetic calls below --
+            # never worth failing a send over.
+            payload["reply_parameters"] = {
+                "message_id": reply_to_message_id,
+                "allow_sending_without_reply": True,
+            }
         if inline is not None:
             # Per-message inline buttons: taps arrive as `callback_query` updates
             # carrying the button's callback_data. Used by `ask` (Allow/Deny) and
