@@ -33,8 +33,54 @@ def last_notified_count(ledger: Ledger) -> int:
     return max(counts, default=0)
 
 
+# Bucketing turns a flat digest -- every ledger entry, in ledger order, no
+# matter how routine -- into the three questions an operator actually has: what
+# shipped, what needs me, what broke. A raw dump answered none of them; you had
+# to read every line to find the one `needs_human` entry buried in forty
+# successful dispatches.
+_WAITING_OUTCOMES = {"needs_human", "blocked", "halted_critical"}
+_WAITING_KINDS = {"spend_alert", "halt"}
+_FAILED_OUTCOMES = {"failure"}
+# `usage` entries are one per headless session and say nothing on their own --
+# they roll into the cost total instead of appearing as lines.
+_COST_ONLY_KIND = "usage"
+
+
+def _bucket(entry: LedgerEntry) -> str:
+    if entry.outcome in _FAILED_OUTCOMES:
+        return "failed"
+    if entry.outcome in _WAITING_OUTCOMES or entry.kind in _WAITING_KINDS:
+        return "waiting"
+    if entry.kind == "dispatch" and entry.outcome == "success":
+        return "shipped"
+    return "other"
+
+
+def _line(entry: LedgerEntry) -> str:
+    return f"  {entry.tool}/{entry.kind}: {entry.detail}"
+
+
 def format_notify_message(entries: list[LedgerEntry]) -> str:
-    return "\n".join(f"{e.ts}  {e.tool}/{e.kind}  {e.outcome}: {e.detail}" for e in entries)
+    buckets: dict[str, list[str]] = {"shipped": [], "waiting": [], "failed": [], "other": []}
+    cost_usd = 0.0
+    for entry in entries:
+        if entry.kind == _COST_ONLY_KIND:
+            cost_usd += float(entry.data.get("cost_usd", 0.0))
+            continue
+        buckets[_bucket(entry)].append(_line(entry))
+
+    sections = []
+    if buckets["shipped"]:
+        sections.append("🚢 Shipped:\n" + "\n".join(buckets["shipped"]))
+    if buckets["waiting"]:
+        sections.append("⏳ Waiting on you:\n" + "\n".join(buckets["waiting"]))
+    if buckets["failed"]:
+        sections.append("❌ Failed:\n" + "\n".join(buckets["failed"]))
+    if buckets["other"]:
+        sections.append("📋 Other:\n" + "\n".join(buckets["other"]))
+    if cost_usd:
+        sections.append(f"💰 Cost: ${cost_usd:.2f}")
+    return "\n\n".join(sections) if sections else "nothing to report"
 
 
 @dataclass(frozen=True)
