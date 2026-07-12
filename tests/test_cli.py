@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -528,3 +529,56 @@ def test_the_daemon_never_escalates_an_ask_through_itself(monkeypatch) -> None:
         "the daemon must build its Guard with ask=None or it will deadlock against "
         "itself on any ASK"
     )
+
+
+def test_build_routes_wires_halt_and_resume_to_the_configured_command(tmp_path: Path) -> None:
+    # Exercises the route closures themselves, not just handle_halt: a wiring bug
+    # here (wrong policy, wrong ledger, control not passed through) would ship a
+    # kill switch that silently does nothing.
+    from myguard import Guard
+
+    from mytelegrambot.halt_command import HaltControl
+
+    seen = tmp_path / "flags.txt"
+    script = (
+        f"import sys, pathlib; pathlib.Path({str(seen)!r}).write_text(' '.join(sys.argv[1:]));"
+        "print('ok')"
+    )
+    ledger = Ledger(tmp_path / "l.jsonl")
+
+    routes = cli.build_routes(
+        ledger=ledger,
+        store=None,
+        github=None,
+        guard=Guard(ask=None),
+        engine=NoopEngine(),
+        repo="o/r",
+        note_repo="o/r",
+        catalog=None,
+        halt=HaltControl(f"{sys.executable} -c {script!r}"),
+    )
+
+    assert "ok" in routes["halt"]("", operator()).text
+    assert seen.read_text() == "--abort"
+
+    assert "ok" in routes["resume"]("", operator()).text
+    assert seen.read_text() == "--clear-halt"
+
+    assert [e.kind for e in ledger] == ["halt", "resume"]
+
+
+def test_halt_routes_exist_but_do_nothing_when_no_command_is_configured() -> None:
+    from myguard import Guard
+
+    routes = cli.build_routes(
+        ledger=Ledger(Path("/dev/null")),
+        store=None,
+        github=None,
+        guard=Guard(ask=None),
+        engine=NoopEngine(),
+        repo="o/r",
+        note_repo="o/r",
+        catalog=None,
+    )
+
+    assert "isn't wired up" in routes["halt"]("", operator()).text
