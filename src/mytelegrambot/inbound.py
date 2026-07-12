@@ -46,6 +46,10 @@ _HANDLER_FAILED = "⚠️ Something went wrong handling that. It has been logged
 # Allow/Deny buttons carry, so this cannot drift from `policy.ASK_DECISIONS`.
 ASK_ACKS = {"allow": "Allowed ✓", "deny": "Denied ✗"}
 
+# Appended to the prompt itself once it is answered, so the chat keeps a record. A
+# toast is gone in a second; this is still there tomorrow.
+ASK_OUTCOMES = {"allow": "\n\n✅ You allowed this.", "deny": "\n\n🚫 You denied this."}
+
 # `ask`'s Allow/Deny buttons carry the ASK_DECISIONS callback_data values. They are
 # never routed to a handler: they answer a question a *separate* process is
 # blocking on, and the ledger is how it hears the answer.
@@ -191,10 +195,27 @@ def _handle_ask_decision(
     # it right now. Nothing about telling the human may be able to reach back and
     # undo an approval they already gave, whatever the transport does.
     try:
-        transport.answer_callback_query(callback.query_id, text=ASK_ACKS[callback.data])
-        # Strip the buttons, so an answered prompt stops looking pending. Otherwise
-        # the only evidence of a tap is the thing it silently caused, somewhere else.
-        transport.clear_inline_keyboard(callback.message_id, chat_id=principal.chat_id)
+        # `alert=True` makes this a modal the human has to dismiss, not a banner
+        # that auto-dismisses in about a second. The first person to approve a merge
+        # from their phone saw the buttons vanish and no toast at all, and reasonably
+        # concluded the button was dead -- while the merge went through behind them.
+        transport.answer_callback_query(callback.query_id, text=ASK_ACKS[callback.data], alert=True)
+        # Then write the decision into the prompt itself. A toast is gone in a
+        # second; scrolling back to an answered prompt tomorrow should not show a
+        # question with no answer. Sending no reply_markup also drops the buttons, so
+        # this both records the decision and stops the prompt looking pending.
+        #
+        # The prompt's own words are reused verbatim and one fixed line is appended:
+        # this tool still composes no prose about what it relays.
+        if callback.message_text:
+            transport.edit_message_text(
+                callback.message_id,
+                callback.message_text + ASK_OUTCOMES[callback.data],
+                chat_id=principal.chat_id,
+            )
+        else:
+            # No text to rewrite (not a plain-text prompt): at least drop the buttons.
+            transport.clear_inline_keyboard(callback.message_id, chat_id=principal.chat_id)
     except Exception as exc:
         print(f"mytelegrambot: could not acknowledge the tap (cosmetic): {describe(exc)}")
 

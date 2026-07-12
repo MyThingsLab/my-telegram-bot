@@ -161,9 +161,15 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   *exactly* what they would have seen had the bot been dead — while behind them the
   approval went through and a PR merged. ("I clicked Allow and nothing happened"
   was a complaint about being told nothing, and it was right.) The tap now gets a
-  toast (`ASK_ACKS`, keyed by `callback_data` so it cannot drift from
-  `ASK_DECISIONS`) and the keyboard is stripped, so an answered prompt stops looking
-  pending. **Order is load-bearing:** the ledger entry is recorded *first* — a
+  **modal** (`answerCallbackQuery` with `show_alert`) the human has to dismiss —
+  *not* a plain toast, which Telegram auto-dismisses in about a second and which the
+  first person to approve a merge from their phone missed entirely, seeing the
+  buttons vanish and nothing else. And the prompt itself is **rewritten to record the
+  decision** (`edit_message_text` with the prompt's own words plus one fixed line
+  from `ASK_OUTCOMES`), which also drops the buttons in the same call: a toast is
+  gone in a second, but scrolling back to an answered prompt tomorrow must not show a
+  question with no answer. `ASK_ACKS`/`ASK_OUTCOMES` are keyed by `callback_data` so
+  they cannot drift from `ASK_DECISIONS`. **Order is load-bearing:** the ledger entry is recorded *first* — a
   separate `ask` process is blocking on it — and every acknowledgement after it is
   wrapped and best-effort, because nothing about telling the human may reach back
   and undo an approval they already gave.
