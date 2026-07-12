@@ -390,3 +390,62 @@ def test_clear_inline_keyboard_swallows_a_network_error(urlopen: _FakeUrlopen) -
     urlopen.queue(urllib.error.URLError("down"))
 
     _transport().clear_inline_keyboard(77)
+
+
+def test_answer_callback_query_can_demand_a_modal(urlopen: _FakeUrlopen) -> None:
+    # Without show_alert, Telegram renders the text as a banner that auto-dismisses
+    # in about a second -- easy to miss entirely, which is exactly what happened when
+    # the first person to approve a merge from their phone saw nothing at all.
+    urlopen.queue({"result": True})
+
+    _transport().answer_callback_query("q1", text="Allowed ✓", alert=True)
+
+    _url, payload, _timeout = urlopen.calls[0]
+    assert payload["show_alert"] is True
+    assert payload["text"] == "Allowed ✓"
+
+
+def test_answer_callback_query_stays_a_toast_by_default(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"result": True})
+
+    _transport().answer_callback_query("q1")
+
+    _url, payload, _timeout = urlopen.calls[0]
+    assert "show_alert" not in payload
+
+
+def test_edit_message_text_records_the_decision_and_drops_the_buttons(
+    urlopen: _FakeUrlopen,
+) -> None:
+    urlopen.queue({"result": True})
+
+    _transport().edit_message_text(77, "Action: pr-merge\n\n✅ You allowed this.", chat_id="42")
+
+    url, payload, _timeout = urlopen.calls[0]
+    assert url.endswith("/editMessageText")
+    assert payload["message_id"] == 77
+    assert "You allowed this" in payload["text"]
+    # No reply_markup: that is what removes the keyboard in the same call.
+    assert "reply_markup" not in payload
+
+
+def test_edit_message_text_swallows_a_network_error(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue(urllib.error.URLError("down"))
+
+    _transport().edit_message_text(77, "text")
+
+
+def test_callback_carries_the_prompts_own_words() -> None:
+    # So an answered prompt can be rewritten to record the decision without this tool
+    # composing any prose about it.
+    callback = callback_from_update(
+        {
+            "callback_query": {
+                "id": "q1",
+                "data": "allow",
+                "message": {"message_id": 77, "chat": {"id": "c"}, "text": "Action: pr-merge"},
+            }
+        }
+    )
+
+    assert callback.message_text == "Action: pr-merge"

@@ -508,9 +508,17 @@ def test_a_tap_gets_a_visible_answer_and_the_buttons_go_away(tmp_path: Path) -> 
 
     # The decision is still durable -- that is what `ask` is blocking on.
     assert await_decision(ledger, 77, timeout=0) == "allow"
-    # And the human is actually told.
+    # And the human is actually told, as a modal they must dismiss rather than a
+    # banner gone in a second.
     assert transport.answers == [("q1", "Allowed ✓")]
-    assert transport.cleared == [77]  # an answered prompt stops looking pending
+    assert transport.alerts == [True]
+    # And the prompt itself records what they chose, keeping its own words and
+    # appending one fixed line -- so scrolling back tomorrow still shows the answer.
+    ((message_id, text),) = transport.edits
+    assert message_id == 77
+    assert text.startswith("Action: pr-merge")  # the prompt, verbatim
+    assert "You allowed this" in text
+    assert transport.cleared == []  # the edit drops the buttons in the same call
 
 
 def test_a_denial_says_so_too(tmp_path: Path) -> None:
@@ -555,3 +563,43 @@ def test_a_cosmetic_failure_never_loses_the_decision(tmp_path: Path) -> None:
     )
 
     assert await_decision(ledger, 77, timeout=0) == "allow"
+
+
+def test_a_denial_is_recorded_in_the_prompt_too(tmp_path: Path) -> None:
+    transport = FakeTransport()
+
+    handle_batch(
+        [callback_update(1, message_id=77, data="deny")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={},
+    )
+
+    ((_message_id, text),) = transport.edits
+    assert "You denied this" in text
+
+
+def test_a_prompt_with_no_text_still_loses_its_buttons(tmp_path: Path) -> None:
+    # Nothing to rewrite (not a plain-text prompt), so fall back to just dropping the
+    # buttons rather than leaving them looking pending.
+    transport = FakeTransport()
+
+    handle_batch(
+        [callback_update(1, message_id=77, data="allow", message_text="")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={},
+    )
+
+    assert transport.edits == []
+    assert transport.cleared == [77]
+
+
+def test_the_outcome_lines_cannot_drift_from_the_buttons() -> None:
+    from mytelegrambot.inbound import ASK_ACKS, ASK_OUTCOMES
+    from mytelegrambot.policy import ASK_DECISIONS
+
+    assert tuple(ASK_ACKS) == ASK_DECISIONS
+    assert tuple(ASK_OUTCOMES) == ASK_DECISIONS

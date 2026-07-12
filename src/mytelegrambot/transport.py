@@ -32,11 +32,17 @@ class TelegramTransport(Protocol):
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None: ...
 
-    def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None: ...
+    def answer_callback_query(
+        self, callback_query_id: str, *, text: str = "", alert: bool = False
+    ) -> None: ...
 
     def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None: ...
 
     def clear_inline_keyboard(self, message_id: int, *, chat_id: str | None = None) -> None: ...
+
+    def edit_message_text(
+        self, message_id: int, text: str, *, chat_id: str | None = None
+    ) -> None: ...
 
 
 def chunk_for_telegram(text: str, *, limit: int = TELEGRAM_MAX_LEN) -> list[str]:
@@ -135,6 +141,22 @@ class HTTPTelegramTransport:
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             print(f"mytelegrambot: sendChatAction failed (cosmetic): {describe(exc)}")
 
+    def edit_message_text(self, message_id: int, text: str, *, chat_id: str | None = None) -> None:
+        # Rewrites an answered prompt to say what was decided -- and, by sending no
+        # reply_markup, drops its buttons in the same call.
+        #
+        # A toast is gone in a second. Without this, scrolling back to an Allow/Deny
+        # prompt tomorrow shows the question and no answer: the chat keeps no record
+        # of what the human chose, which is a strange gap in the one channel whose
+        # entire job is telling the human what happened.
+        try:
+            self._call(
+                "editMessageText",
+                {"chat_id": chat_id or self._chat_id, "message_id": message_id, "text": text},
+            )
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"mytelegrambot: editMessageText failed (cosmetic): {describe(exc)}")
+
     def clear_inline_keyboard(self, message_id: int, *, chat_id: str | None = None) -> None:
         # Strips the buttons off a prompt that has been answered. Without this, an
         # Allow/Deny prompt keeps its buttons forever and reads as still pending --
@@ -159,14 +181,23 @@ class HTTPTelegramTransport:
             {"commands": [{"command": name, "description": desc} for name, desc in commands]},
         )
 
-    def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
+    def answer_callback_query(
+        self, callback_query_id: str, *, text: str = "", alert: bool = False
+    ) -> None:
         # Telegram spins a loading indicator on the tapped button until this is
         # called. Best-effort: a failure here is cosmetic (the spinner hangs), and
         # must never undo an action that already happened.
+        #
+        # `alert` is the difference between a toast and a modal. Without it Telegram
+        # renders `text` as a small banner that auto-dismisses in about a second --
+        # easy to miss entirely, which is exactly what happened when the first person
+        # to approve a merge from their phone saw nothing and reasonably concluded
+        # the button was dead. An approval is consequential enough to be unmissable.
+        payload = {"callback_query_id": callback_query_id, "text": text}
+        if alert:
+            payload["show_alert"] = True
         try:
-            self._call(
-                "answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text}
-            )
+            self._call("answerCallbackQuery", payload)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             print(f"mytelegrambot: answerCallbackQuery failed (cosmetic): {describe(exc)}")
 
@@ -217,6 +248,9 @@ class Callback:
     query_id: str
     message_id: int
     data: str
+    # The prompt's own words, so an answered one can be rewritten to record the
+    # decision without this tool composing any prose about it.
+    message_text: str = ""
 
 
 def callback_from_update(update: dict) -> Callback | None:
@@ -231,4 +265,9 @@ def callback_from_update(update: dict) -> Callback | None:
     data = callback.get("data")
     if message_id is None or query_id is None or not data:
         return None
-    return Callback(query_id=str(query_id), message_id=int(message_id), data=str(data))
+    return Callback(
+        query_id=str(query_id),
+        message_id=int(message_id),
+        data=str(data),
+        message_text=str(callback.get("message", {}).get("text") or ""),
+    )
