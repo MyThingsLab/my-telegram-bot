@@ -204,3 +204,95 @@ def test_a_digest_that_fits_is_still_one_message(tmp_path: Path) -> None:
 
     assert len(transport.sent) == 1
     assert result.outcome == "success"
+
+
+def test_digest_groups_a_shipped_dispatch_under_its_own_heading(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    ledger.record(
+        "fleet_dispatch", "dispatch", "success", detail="my-guard#12: opened PR #7"
+    )
+    transport = FakeTransport()
+
+    notify(ledger, transport=transport)
+
+    text = transport.sent[0][0]
+    assert "🚢 Shipped:" in text
+    assert "opened PR #7" in text
+
+
+def test_digest_groups_a_needs_human_dispatch_under_waiting_on_you(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    ledger.record(
+        "fleet_dispatch", "dispatch", "needs_human", detail="my-guard#3: gave up after 3 attempts"
+    )
+    transport = FakeTransport()
+
+    notify(ledger, transport=transport)
+
+    text = transport.sent[0][0]
+    assert "⏳ Waiting on you:" in text
+    assert "gave up after 3 attempts" in text
+
+
+def test_digest_groups_a_spend_alert_and_halt_under_waiting_on_you(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    ledger.record("fleet_dispatch", "spend_alert", "success", detail="crossed 80% of cap")
+    ledger.record("mytelegrambot", "halt", "success", detail="halted from spend alert")
+    transport = FakeTransport()
+
+    notify(ledger, transport=transport)
+
+    text = transport.sent[0][0]
+    assert "⏳ Waiting on you:" in text
+    assert "crossed 80% of cap" in text
+    assert "halted from spend alert" in text
+
+
+def test_digest_groups_a_failure_under_failed(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    ledger.record("fleet_dispatch", "dispatch", "failure", detail="my-guard#9: crashed")
+    transport = FakeTransport()
+
+    notify(ledger, transport=transport)
+
+    text = transport.sent[0][0]
+    assert "❌ Failed:" in text
+    assert "my-guard#9: crashed" in text
+
+
+def test_digest_rolls_up_usage_entries_into_a_cost_total_not_individual_lines(
+    tmp_path: Path,
+) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    ledger.record("fleet_dispatch", "usage", "success", detail="session cost", cost_usd=1.25)
+    ledger.record("fleet_dispatch", "usage", "success", detail="session cost", cost_usd=2.50)
+    transport = FakeTransport()
+
+    notify(ledger, transport=transport)
+
+    text = transport.sent[0][0]
+    assert "💰 Cost: $3.75" in text
+    assert "session cost" not in text  # rolled up, not listed per-entry
+
+
+def test_digest_with_only_usage_entries_still_reports_cost(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    ledger.record("fleet_dispatch", "usage", "success", detail="session cost", cost_usd=4.0)
+    transport = FakeTransport()
+
+    result = notify(ledger, transport=transport)
+
+    assert result.outcome == "success"
+    assert "💰 Cost: $4.00" in transport.sent[0][0]
+
+
+def test_digest_puts_an_uncategorized_entry_under_other(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    ledger.record("myidea", "idea_filed", "success", detail="filed idea #9")
+    transport = FakeTransport()
+
+    notify(ledger, transport=transport)
+
+    text = transport.sent[0][0]
+    assert "📋 Other:" in text
+    assert "filed idea #9" in text
