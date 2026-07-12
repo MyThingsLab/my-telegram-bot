@@ -17,6 +17,7 @@ from mythings.testers import TesterStore
 
 from mytelegrambot.authz import ChatAuthorizer, Principal, ledger_for
 from mytelegrambot.guide_command import handle_catalog, metered_wish, trial_tool
+from mytelegrambot.halt_command import HaltControl, handle_halt, handle_resume
 from mytelegrambot.help_command import help_reply
 from mytelegrambot.idea_command import (
     DEFAULT_IDEA_REPO,
@@ -55,6 +56,7 @@ def build_routes(
     repo: str,
     note_repo: str,
     catalog,
+    halt: HaltControl | None = None,
 ) -> dict[str, CommandHandler]:
     def _guide(principal: Principal) -> Guide:
         # One Guide per request so a tester's activity lands in their own ledger.
@@ -99,12 +101,21 @@ def build_routes(
     def wish(text: str, principal: Principal) -> Iterator[Reply]:
         return metered_wish(text, principal, store=store, guide=_guide(principal))
 
+    def halt_cmd(text: str, principal: Principal) -> Reply:
+        # Operator-only, Policy-gated, and never a tester's: see halt_command.
+        return handle_halt(text, principal, control=halt, policy=guard, ledger=ledger)
+
+    def resume_cmd(text: str, principal: Principal) -> Reply:
+        return handle_resume(text, principal, control=halt, policy=guard, ledger=ledger)
+
     return {
         "idea": idea,
         "note": note,
         "catalog": catalog_cmd,
         "wish": wish,
         "status": status,
+        "halt": halt_cmd,
+        "resume": resume_cmd,
         "help": help_reply,
         "start": help_reply,
     }
@@ -215,6 +226,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     run.add_argument("--engine", choices=sorted(_ENGINES), default="claude-cli")
     run.add_argument("--long-poll", type=float, default=30.0)
+    run.add_argument(
+        "--halt-cmd",
+        default=None,
+        help="base command for the fleet kill switch, e.g. "
+        "'python3 /path/to/fleet_dispatch.py'. /halt appends --abort and /resume "
+        "--clear-halt. Absent, /halt says so rather than pretending. A CLI hand-off: "
+        "the bot never imports the fleet or learns where its marker file lives.",
+    )
     run.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
     run.add_argument(
         "--testers-db",
@@ -274,7 +293,22 @@ def main(argv: list[str] | None = None) -> int:
             "ledger": ledger,
             "store": store,
             "github": GitHub(repo=repo),
-            "guard": Guard(),
+            # ask=None is load-bearing, not a default spelled out for clarity.
+            #
+            # MyGuard escalates an ASK by shelling out to $MYTHINGS_ASK_CMD -- which
+            # is `mytelegrambot ask`, which blocks waiting for the `kind=callback`
+            # ledger entry that *this daemon* writes when the human taps. The daemon
+            # is single-threaded: it would be sitting inside the handler that
+            # triggered the ask, unable to fetch the very update that answers it. It
+            # would deadlock against itself for the whole ask timeout and then DENY
+            # -- and since this process is also the fleet's ask channel, every
+            # worker's escalation would stall behind it.
+            #
+            # So the daemon never escalates through itself. An ASK it cannot service
+            # resolves DENY via the `under(unattended=True)` collapse its handlers
+            # already apply, which is exactly the posture an unattended runner is
+            # supposed to take.
+            "guard": Guard(ask=None),
             "engine": _ENGINES[args.engine](),
             "repo": repo,
             "note_repo": args.note_repo or DEFAULT_NOTE_REPO,
@@ -282,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
             # and refuses outright if the phrasebook describes an unshipped tool.
             "catalog": build_catalog(),
         }
+        halt = HaltControl(args.halt_cmd) if args.halt_cmd else None
         print(
             f"mytelegrambot: polling (long_poll={args.long_poll}s, "
             f"testers={'on' if store else 'off'})"
@@ -290,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
             ledger=ledger,
             transport=transport,
             authorizer=authorizer,
-            routes=build_routes(**wiring),
+            routes=build_routes(**wiring, halt=halt),
             callback_routes=build_callback_routes(**wiring),
             # Recorded regardless of --testers-db: you have to see who knocked
             # before you have anyone to put in a database.

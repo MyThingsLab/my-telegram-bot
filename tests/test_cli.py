@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -144,7 +145,17 @@ def test_run_wires_the_daemon_with_routes_and_an_authorizer(
     code = cli.main(["run", "--engine", "noop", "--ledger", str(ledger_path)])
 
     assert code == 0
-    assert set(captured["routes"]) == {"idea", "note", "catalog", "wish", "status", "help", "start"}
+    assert set(captured["routes"]) == {
+        "idea",
+        "note",
+        "catalog",
+        "wish",
+        "status",
+        "halt",
+        "resume",
+        "help",
+        "start",
+    }
     authorizer = captured["authorizer"]
     assert authorizer.authorize("chat").is_operator
     assert authorizer.authorize("999") is None  # no --testers-db: operator only
@@ -489,3 +500,85 @@ def test_run_wires_the_wish_route_through_the_metered_handler(
     assert reply.text == "wished"
     assert seen["text"] == "tidy my books"
     assert seen["store"] is None
+
+
+def test_the_daemon_never_escalates_an_ask_through_itself(monkeypatch) -> None:
+    # The deadlock this prevents:
+    #
+    # MyGuard escalates an ASK by shelling out to $MYTHINGS_ASK_CMD -- which is
+    # `mytelegrambot ask`, which blocks waiting for the `kind=callback` ledger entry
+    # that *this daemon* writes when the human taps. The daemon is single-threaded,
+    # so it would be sitting inside the handler that triggered the ask, unable to
+    # fetch the update that answers it. It would hang for the full ask timeout and
+    # then DENY -- and because this process is also the fleet's ask channel, every
+    # worker's escalation would stall behind it.
+    #
+    # A bare Guard() picks the channel up from the environment, so the daemon has to
+    # pass ask=None explicitly. This test fails if anyone "simplifies" it back.
+    from myguard import Guard
+
+    monkeypatch.setenv("MYTHINGS_ASK_CMD", "mytelegrambot ask")
+
+    # A Guard built the ordinary way would escalate...
+    assert Guard().ask is not None
+    # ...so the daemon must not build one the ordinary way.
+    assert Guard(ask=None).ask is None
+
+    source = Path(cli.__file__).read_text()
+    assert '"guard": Guard(ask=None)' in source, (
+        "the daemon must build its Guard with ask=None or it will deadlock against "
+        "itself on any ASK"
+    )
+
+
+def test_build_routes_wires_halt_and_resume_to_the_configured_command(tmp_path: Path) -> None:
+    # Exercises the route closures themselves, not just handle_halt: a wiring bug
+    # here (wrong policy, wrong ledger, control not passed through) would ship a
+    # kill switch that silently does nothing.
+    from myguard import Guard
+
+    from mytelegrambot.halt_command import HaltControl
+
+    seen = tmp_path / "flags.txt"
+    script = (
+        f"import sys, pathlib; pathlib.Path({str(seen)!r}).write_text(' '.join(sys.argv[1:]));"
+        "print('ok')"
+    )
+    ledger = Ledger(tmp_path / "l.jsonl")
+
+    routes = cli.build_routes(
+        ledger=ledger,
+        store=None,
+        github=None,
+        guard=Guard(ask=None),
+        engine=NoopEngine(),
+        repo="o/r",
+        note_repo="o/r",
+        catalog=None,
+        halt=HaltControl(f"{sys.executable} -c {script!r}"),
+    )
+
+    assert "ok" in routes["halt"]("", operator()).text
+    assert seen.read_text() == "--abort"
+
+    assert "ok" in routes["resume"]("", operator()).text
+    assert seen.read_text() == "--clear-halt"
+
+    assert [e.kind for e in ledger] == ["halt", "resume"]
+
+
+def test_halt_routes_exist_but_do_nothing_when_no_command_is_configured() -> None:
+    from myguard import Guard
+
+    routes = cli.build_routes(
+        ledger=Ledger(Path("/dev/null")),
+        store=None,
+        github=None,
+        guard=Guard(ask=None),
+        engine=NoopEngine(),
+        repo="o/r",
+        note_repo="o/r",
+        catalog=None,
+    )
+
+    assert "isn't wired up" in routes["halt"]("", operator()).text

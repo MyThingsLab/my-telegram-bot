@@ -155,6 +155,34 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   `/help` (`router.unknown_command`) and no ledger entry. Note `parse_command`
   strips the `@botname` suffix Telegram appends in group chats — its own
   autocomplete emits `/idea@MyBot` there, which used to parse as an unknown name.
+- **The daemon must never escalate an `ASK` through itself.** MyGuard resolves an
+  `ASK` by shelling out to `$MYTHINGS_ASK_CMD` — which is `mytelegrambot ask`,
+  which blocks waiting for the `kind=callback` ledger entry *this daemon* writes
+  when the human taps. The daemon is single-threaded: it would be sitting inside
+  the handler that triggered the ask, unable to fetch the very update that answers
+  it. It would **deadlock against itself** for the whole ask timeout, then `DENY`
+  — and because this process is also the fleet's ask channel, every worker's
+  escalation would stall behind it. So `run` builds `Guard(ask=None)`
+  (`cli.py`), and an `ASK` it cannot service collapses to `DENY` through the
+  `under(unattended=True)` its handlers already apply. **Do not "simplify" that
+  back to a bare `Guard()`** — a test pins it. (`ask=None` is a real opt-out, not
+  the default spelled out: MyGuard uses a distinct sentinel precisely so this
+  refusal is expressible.)
+- **`/halt` is a CLI hand-off, and deliberately not MyDirector's.** The fleet's
+  kill switch was a marker file you `touch` from a terminal — so the single most
+  safety-critical control was unreachable exactly when the unattended, billed loop
+  was running and you were away from the machine. Halting needs no Engine call,
+  composes no prose and makes no judgment, so it ships here rather than waiting on
+  MyDirector (see `my-things-core/docs/tools/my-director.md`). The bot runs the
+  command `run --halt-cmd` names and appends `--abort` / `--clear-halt`: it never
+  imports the fleet, never learns where `fleet_dispatch.py` lives, and does not
+  know a marker file exists. **Operator only** — a tester who could stop every
+  worker would be a denial-of-service with a chat account — and the write passes
+  `Policy` like every other. The reply **relays the command's own stdout verbatim**
+  rather than claiming "fleet halted": a confident summary the command never
+  actually said is exactly the hallucination the no-prose rule exists to prevent.
+  Kept out of `COMMAND_MENU` on purpose: `setMyCommands` advertises to every chat,
+  and advertising a fleet kill switch to testers is an invitation.
 - **Authorization is not the transport's job.** `fetch_updates` returns every
   update Telegram sends; `authz.ChatAuthorizer` decides who may be heard.
   The operator (`TELEGRAM_CHAT_ID`) is authorized *by configuration, never by

@@ -72,6 +72,16 @@ the one exception (see below).
   run `mytelegrambot testers pending` — an unrecognized chat still gets no reply
   and no ack, but the knock is recorded locally (deduplicated, and capped so it
   cannot become a spam sink) and printed with a ready-to-paste `testers add`.
+- **Halt:** `/halt` stops the fleet from launching any further work; `/resume`
+  lets it start again. The kill switch used to be a marker file you `touch` from a
+  terminal — so the fleet's most safety-critical control was unreachable exactly
+  when the unattended, billed loop was running and you were away from the machine.
+  **Operator only** (a tester who could stop every worker would be a
+  denial-of-service with a chat account), `Policy`-gated like every other write,
+  and a pure CLI hand-off: point `run --halt-cmd` at `fleet_dispatch.py` and the
+  bot appends `--abort` / `--clear-halt`. It never imports the fleet and never
+  learns where its marker file lives. The reply is the command's own output,
+  verbatim — never a claim about what happened that the command didn't make.
 - **Setup:** `mytelegrambot setup` is a one-off admin call that registers the
   command menu (Telegram autocomplete + the ☰ menu button) and shows a
   persistent reply keyboard of tappable `/command` shortcuts. Taps arrive as
@@ -88,7 +98,7 @@ from the environment, never logged, never written to the ledger.
 mytelegrambot setup
 mytelegrambot notify [--since ISO8601]
 mytelegrambot ask --action-kind <kind> --payload-json <json> [--timeout 300]
-mytelegrambot run [--repo owner/name] [--note-repo owner/name] [--engine claude-cli|noop] [--testers-db PATH]
+mytelegrambot run [--repo owner/name] [--note-repo owner/name] [--engine claude-cli|noop] [--testers-db PATH] [--halt-cmd CMD]
 mytelegrambot testers pending
 mytelegrambot testers add <handle> --chat-id <id> --quota <n>
 mytelegrambot testers disable <id>
