@@ -70,6 +70,8 @@ class FakeTransport:
         self.answered: list[str] = []
         self.markdown: list[bool] = []
         self.actions: list[tuple[str, str | None]] = []
+        self.cleared: list[int] = []
+        self.answers: list[tuple[str, str]] = []
         self._updates = updates or []
         self._next_id = 1
 
@@ -93,11 +95,15 @@ class FakeTransport:
     def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None:
         self.actions.append((action, chat_id))
 
+    def clear_inline_keyboard(self, message_id: int, *, chat_id: str | None = None) -> None:
+        self.cleared.append(message_id)
+
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
         self.commands_set.append(commands)
 
     def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
         self.answered.append(callback_query_id)
+        self.answers.append((callback_query_id, text))
 
     def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]:
         self.fetched.append((offset, timeout))
@@ -120,6 +126,9 @@ class ErrorTransport:
         raise RuntimeError("telegram API unreachable")
 
     def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None:
+        raise RuntimeError("telegram API unreachable")
+
+    def clear_inline_keyboard(self, message_id: int, *, chat_id: str | None = None) -> None:
         raise RuntimeError("telegram API unreachable")
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:

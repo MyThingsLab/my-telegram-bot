@@ -484,3 +484,74 @@ def test_a_failing_typing_indicator_never_costs_the_reply(
     assert attempts["n"] <= 2  # one per pull: it gave up, it did not spin
     assert result.commands_routed == 1
     assert transport.sent[0][0] == "done anyway"
+
+
+# --------------------------------------------- the tap has to say something back
+#
+# "I clicked Allow and nothing happened." The approval had in fact gone through and
+# a PR had merged -- but answer_callback_query was called with no text, so Telegram
+# silently stopped the spinner and left the Allow/Deny buttons sitting there. What
+# the human saw was exactly what they would have seen if the bot were dead.
+
+
+def test_a_tap_gets_a_visible_answer_and_the_buttons_go_away(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    transport = FakeTransport()
+
+    handle_batch(
+        [callback_update(1, message_id=77, data="allow")],
+        ledger=ledger,
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={},
+    )
+
+    # The decision is still durable -- that is what `ask` is blocking on.
+    assert await_decision(ledger, 77, timeout=0) == "allow"
+    # And the human is actually told.
+    assert transport.answers == [("q1", "Allowed ✓")]
+    assert transport.cleared == [77]  # an answered prompt stops looking pending
+
+
+def test_a_denial_says_so_too(tmp_path: Path) -> None:
+    transport = FakeTransport()
+
+    handle_batch(
+        [callback_update(1, message_id=77, data="deny")],
+        ledger=Ledger(tmp_path / "l.jsonl"),
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={},
+    )
+
+    assert transport.answers == [("q1", "Denied ✗")]
+
+
+def test_the_acks_cannot_drift_from_the_buttons() -> None:
+    # The toast is keyed by the callback_data the Allow/Deny buttons carry. If a new
+    # decision were added without an ack, this would KeyError inside the daemon.
+    from mytelegrambot.inbound import ASK_ACKS
+    from mytelegrambot.policy import ASK_DECISIONS
+
+    assert tuple(ASK_ACKS) == ASK_DECISIONS
+
+
+def test_a_cosmetic_failure_never_loses_the_decision(tmp_path: Path) -> None:
+    # The ledger entry is what the waiting `ask` process blocks on. A broken toast
+    # or a failed button-strip must never be able to undo an approval the human
+    # already gave.
+    class _CosmeticsBroken(FakeTransport):
+        def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
+            raise RuntimeError("telegram flaked")
+
+    ledger = Ledger(tmp_path / "l.jsonl")
+
+    handle_batch(
+        [callback_update(1, message_id=77, data="allow")],
+        ledger=ledger,
+        transport=_CosmeticsBroken(),
+        authorizer=_authorizer(),
+        routes={},
+    )
+
+    assert await_decision(ledger, 77, timeout=0) == "allow"

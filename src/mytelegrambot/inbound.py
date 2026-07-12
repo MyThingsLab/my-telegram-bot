@@ -42,6 +42,10 @@ _TYPING_DELAY_SECONDS = 0.4
 # entitled to this tool's internals.
 _HANDLER_FAILED = "⚠️ Something went wrong handling that. It has been logged for the operator."
 
+# The toast Telegram shows on the tapped button. Keyed by the callback_data the
+# Allow/Deny buttons carry, so this cannot drift from `policy.ASK_DECISIONS`.
+ASK_ACKS = {"allow": "Allowed ✓", "deny": "Denied ✗"}
+
 # `ask`'s Allow/Deny buttons carry the ASK_DECISIONS callback_data values. They are
 # never routed to a handler: they answer a question a *separate* process is
 # blocking on, and the ledger is how it hears the answer.
@@ -159,7 +163,12 @@ def _drain(replies: Iterator[Reply], *, transport: TelegramTransport, principal:
         sent_any = True
 
 
-def _handle_ask_decision(callback: Callback, *, ledger: Ledger) -> None:
+def _handle_ask_decision(
+    callback: Callback, *, ledger: Ledger, transport: TelegramTransport, principal: Principal
+) -> None:
+    # Record first. The ledger entry is what the waiting `ask` process is blocking
+    # on, so it is the only part that must not fail; everything below is cosmetic
+    # and must never be able to undo it.
     ledger.record(
         tool=_SELF_TOOL,
         kind="callback",
@@ -168,6 +177,26 @@ def _handle_ask_decision(callback: Callback, *, ledger: Ledger) -> None:
         message_id=callback.message_id,
         decision=callback.data,
     )
+
+    # Then tell the human something happened.
+    #
+    # This used to answer with no text at all: Telegram would silently stop the
+    # button's spinner, leave the Allow/Deny buttons sitting on the message, and
+    # show nothing. A human who tapped Allow saw *exactly* what they would have seen
+    # had the bot been dead -- while, behind them, the approval went through and a
+    # PR merged. "I clicked Allow and nothing happened" is not a complaint about the
+    # mechanism; it is a complaint about being told nothing, and it was right.
+    # Guarded as a whole, and not because the transport is expected to raise: the
+    # decision above is already durable and a *separate* process is unblocking on
+    # it right now. Nothing about telling the human may be able to reach back and
+    # undo an approval they already gave, whatever the transport does.
+    try:
+        transport.answer_callback_query(callback.query_id, text=ASK_ACKS[callback.data])
+        # Strip the buttons, so an answered prompt stops looking pending. Otherwise
+        # the only evidence of a tap is the thing it silently caused, somewhere else.
+        transport.clear_inline_keyboard(callback.message_id, chat_id=principal.chat_id)
+    except Exception as exc:
+        print(f"mytelegrambot: could not acknowledge the tap (cosmetic): {describe(exc)}")
 
 
 def _handle_callback(
@@ -184,8 +213,7 @@ def _handle_callback(
             # decision from anyone else cannot be an answer to one. Recording it
             # would let a tester resolve the operator's approval.
             return False
-        _handle_ask_decision(callback, ledger=ledger)
-        transport.answer_callback_query(callback.query_id)
+        _handle_ask_decision(callback, ledger=ledger, transport=transport, principal=principal)
         return True
 
     # Answer the tap *before* doing the work, not after. Telegram spins the button
