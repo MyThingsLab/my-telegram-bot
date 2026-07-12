@@ -33,6 +33,7 @@ from mytelegrambot.pending import PendingChats
 from mytelegrambot.pending import pending as pending_chats
 from mytelegrambot.policy import ask_human
 from mytelegrambot.router import CallbackAction, CallbackHandler, CommandHandler, Reply
+from mytelegrambot.spend_command import handle_spend_halt, handle_spend_raise, send_spend_alert
 from mytelegrambot.status_command import build_status
 from mytelegrambot.transport import HTTPTelegramTransport
 
@@ -131,6 +132,7 @@ def build_callback_routes(
     repo: str,
     note_repo: str,
     catalog,
+    halt: HaltControl | None = None,
 ) -> dict[str, CallbackHandler]:
     del note_repo  # notes have no buttons
 
@@ -164,7 +166,19 @@ def build_callback_routes(
         )
         return trial_tool(action, principal, guide=guide)
 
-    return {"idea:explore": explore, "idea:close": close, "guide:trial": trial}
+    def spend_halt(action: CallbackAction, principal: Principal) -> Reply:
+        return handle_spend_halt(action, principal, control=halt, policy=guard, ledger=ledger)
+
+    def spend_raise(action: CallbackAction, principal: Principal) -> Reply:
+        return handle_spend_raise(action, principal, control=halt, policy=guard, ledger=ledger)
+
+    return {
+        "idea:explore": explore,
+        "idea:close": close,
+        "guide:trial": trial,
+        "spend:halt": spend_halt,
+        "spend:raise": spend_raise,
+    }
 
 
 def _testers_command(args: argparse.Namespace) -> int:
@@ -214,6 +228,15 @@ def main(argv: list[str] | None = None) -> int:
     ask.add_argument("--payload-json", default="{}")
     ask.add_argument("--timeout", type=float, default=300.0)
     ask.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
+
+    alert = sub.add_parser(
+        "alert-spend",
+        help="push a spend-tripwire alert with Halt / Raise-cap buttons and exit",
+    )
+    alert.add_argument("--spent", type=float, required=True)
+    alert.add_argument("--cap", type=float, required=True)
+    alert.add_argument("--raise-to", type=float, required=True)
+    alert.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
 
     run = sub.add_parser(
         "run", help="run the long-lived poller: the sole owner of Telegram's update queue"
@@ -282,6 +305,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{result.outcome}: {result.entries_count} entries")
         return 1 if result.outcome == "failure" else 0
 
+    if args.cmd == "alert-spend":
+        send_spend_alert(
+            spent=args.spent, cap=args.cap, raise_to=args.raise_to,
+            transport=transport, ledger=ledger,
+        )
+        print(f"spend alert pushed: ${args.spent:.2f} of ${args.cap:.2f}/day")
+        return 0
+
     if args.cmd == "run":
         repo = args.repo or DEFAULT_IDEA_REPO
         # Without --testers-db the bot stays exactly as single-user as it was:
@@ -326,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             transport=transport,
             authorizer=authorizer,
             routes=build_routes(**wiring, halt=halt),
-            callback_routes=build_callback_routes(**wiring),
+            callback_routes=build_callback_routes(**wiring, halt=halt),
             # Recorded regardless of --testers-db: you have to see who knocked
             # before you have anyone to put in a database.
             pending=PendingChats(ledger),
