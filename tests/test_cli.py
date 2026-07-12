@@ -335,7 +335,13 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
     cli.main(["run", "--engine", "noop", "--repo", "o/r", "--ledger", str(ledger_path)])
 
     callback_routes = captured["callback_routes"]
-    assert set(callback_routes) == {"idea:explore", "idea:close", "guide:trial"}
+    assert set(callback_routes) == {
+        "idea:explore",
+        "idea:close",
+        "guide:trial",
+        "spend:halt",
+        "spend:raise",
+    }
 
     who = operator()
     assert (

@@ -46,8 +46,11 @@ class HaltControl:
         self.command = command
         self.timeout = timeout
 
-    def run(self, flag: str) -> tuple[bool, str]:
-        argv = [*shlex.split(self.command), flag]
+    def run(self, *flags: str) -> tuple[bool, str]:
+        # Variadic so a caller with a value-taking flag (spend_command's
+        # --raise-daily-cap AMOUNT) can hand over more than one token; every
+        # existing call site here still passes exactly one.
+        argv = [*shlex.split(self.command), *flags]
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=self.timeout, check=False
