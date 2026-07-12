@@ -9,13 +9,16 @@ from mytelegrambot.transport import TelegramTransport, chunk_for_telegram, descr
 _SELF_TOOL = "mytelegrambot"
 
 
+_SELF_BOOKKEEPING_KINDS = ("notify", "poll", "thread_anchor")
+
+
 def _notifiable(entries: list[LedgerEntry]) -> list[LedgerEntry]:
-    # The comms tool never reports on its own digest pushes or its own inbound
-    # poll bookkeeping -- both are pure noise in a digest. Its `ask` entries (a
-    # human was prompted to approve/deny an action) stay in, and so do
-    # `myidea` entries filed via /idea -- both are real fleet events worth
-    # seeing, exactly like an `ask` is.
-    return [e for e in entries if not (e.tool == _SELF_TOOL and e.kind in ("notify", "poll"))]
+    # The comms tool never reports on its own digest pushes, inbound poll
+    # bookkeeping, or thread-anchor rendezvous records -- all three are pure
+    # noise in a digest. Its `ask` entries (a human was prompted to approve/deny
+    # an action) stay in, and so do `myidea` entries filed via /idea -- both are
+    # real fleet events worth seeing, exactly like an `ask` is.
+    return [e for e in entries if not (e.tool == _SELF_TOOL and e.kind in _SELF_BOOKKEEPING_KINDS)]
 
 
 def last_notified_count(ledger: Ledger) -> int:

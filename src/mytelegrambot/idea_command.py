@@ -54,6 +54,14 @@ def _gh(argv: list[str]) -> str:
     return proc.stdout
 
 
+def _thread_subject(number: int) -> str:
+    # Every message about the same idea chains onto the last one via
+    # reply_to_message_id (see inbound._send), so filing, re-exploring, and
+    # closing an idea read as one conversation rather than scattering across a
+    # flat chat that also carries every other repo's events.
+    return f"idea:{number}"
+
+
 def idea_buttons(number: int) -> InlineKeyboard:
     # Hung under every /idea reply and under every re-explore, so the thread stays
     # actionable without typing another command.
@@ -116,6 +124,7 @@ def handle_idea(
     yield Reply(
         f"📝 Filed as [my-idea#{created.number}]({created.url})\nExploring it now…",
         markdown=True,
+        thread_subject=_thread_subject(created.number),
     )
 
     result = explore(
@@ -131,6 +140,7 @@ def handle_idea(
         _brief(result.comment, result.posted),
         inline=idea_buttons(created.number),
         markdown=True,
+        thread_subject=_thread_subject(created.number),
     )
 
 
@@ -200,7 +210,7 @@ def explore_idea(
 
     # Nothing to hand over yet -- the idea already exists -- but the tap still
     # buys a minute of Engine call, so say the work started.
-    yield Reply(f"🔍 Exploring my-idea#{number} again…")
+    yield Reply(f"🔍 Exploring my-idea#{number} again…", thread_subject=_thread_subject(number))
 
     runner_kwargs = {"runner": runner} if runner is not None else {}
     try:
@@ -220,6 +230,7 @@ def explore_idea(
         _brief(result.comment, result.posted),
         inline=idea_buttons(number),
         markdown=True,
+        thread_subject=_thread_subject(number),
     )
 
 
@@ -255,4 +266,4 @@ def close_idea(
         detail=f"closed idea #{number} from chat",
         idea_issue=number,
     )
-    return Reply(f"Closed my-idea#{number}.")
+    return Reply(f"Closed my-idea#{number}.", thread_subject=_thread_subject(number))

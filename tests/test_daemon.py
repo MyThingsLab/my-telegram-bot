@@ -42,6 +42,97 @@ def test_text_command_is_routed_and_replied_to_its_own_chat(tmp_path: Path) -> N
     assert transport.sent_to == [OPERATOR_CHAT]
 
 
+def _threaded_echo(text: str, principal: Principal) -> Reply:
+    return Reply(f"{principal.label} said {text}", thread_subject="topic")
+
+
+def test_a_threaded_reply_carries_no_anchor_the_first_time(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    transport = FakeTransport()
+
+    handle_batch(
+        [message_update(1, "/echo hi")],
+        ledger=ledger,
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"echo": _threaded_echo},
+    )
+
+    assert transport.reply_to == [None]
+
+
+def test_a_second_threaded_reply_chains_onto_the_first(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    transport = FakeTransport()
+
+    handle_batch(
+        [message_update(1, "/echo hi")],
+        ledger=ledger,
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"echo": _threaded_echo},
+    )
+    handle_batch(
+        [message_update(2, "/echo again")],
+        ledger=ledger,
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"echo": _threaded_echo},
+    )
+
+    assert transport.reply_to == [None, 1]  # FakeTransport hands out message_ids from 1
+
+
+def test_an_unthreaded_reply_never_carries_an_anchor(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    transport = FakeTransport()
+
+    handle_batch(
+        [message_update(1, "/echo hi")],
+        ledger=ledger,
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"echo": _echo},
+    )
+    handle_batch(
+        [message_update(2, "/echo again")],
+        ledger=ledger,
+        transport=transport,
+        authorizer=_authorizer(),
+        routes={"echo": _echo},
+    )
+
+    assert transport.reply_to == [None, None]
+
+
+def test_different_thread_subjects_never_cross_anchors(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "l.jsonl")
+    transport = FakeTransport()
+
+    def echo_a(text: str, principal: Principal) -> Reply:
+        return Reply(f"a: {text}", thread_subject="idea:1")
+
+    def echo_b(text: str, principal: Principal) -> Reply:
+        return Reply(f"b: {text}", thread_subject="idea:2")
+
+    handle_batch(
+        [message_update(1, "/a hi")],
+        ledger=ledger, transport=transport, authorizer=_authorizer(), routes={"a": echo_a},
+    )
+    handle_batch(
+        [message_update(2, "/b hi")],
+        ledger=ledger, transport=transport, authorizer=_authorizer(), routes={"b": echo_b},
+    )
+    handle_batch(
+        [message_update(3, "/a again")],
+        ledger=ledger, transport=transport, authorizer=_authorizer(), routes={"a": echo_a},
+    )
+
+    # The third send (subject "idea:1") must chain onto the first ("idea:1"),
+    # not the second ("idea:2") that happened in between.
+    assert transport.reply_to == [None, None, 1]
+
+
 def test_tester_reply_goes_to_the_testers_chat_not_the_operators(tmp_path: Path) -> None:
     store = TesterStore(tmp_path / "t.db")
     store.register("ada", engine_quota=1, chat_id=999)

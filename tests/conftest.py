@@ -79,6 +79,7 @@ class FakeTransport:
         self.edits: list[tuple[int, str]] = []
         self.answers: list[tuple[str, str]] = []
         self.alerts: list[bool] = []
+        self.reply_to: list[int | None] = []
         self._updates = updates or []
         self._next_id = 1
 
@@ -90,11 +91,13 @@ class FakeTransport:
         inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
         markdown: bool = False,
+        reply_to_message_id: int | None = None,
     ) -> int:
         self.sent.append((text, inline))
         self.sent_to.append(chat_id)
         self.keyboards.append(keyboard)
         self.markdown.append(markdown)
+        self.reply_to.append(reply_to_message_id)
         message_id = self._next_id
         self._next_id += 1
         return message_id
@@ -135,6 +138,7 @@ class ErrorTransport:
         inline: InlineKeyboard | None = None,
         keyboard: tuple[tuple[str, ...], ...] | None = None,
         markdown: bool = False,
+        reply_to_message_id: int | None = None,
     ) -> int:
         raise RuntimeError("telegram API unreachable")
 

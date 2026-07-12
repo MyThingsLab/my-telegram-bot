@@ -23,6 +23,10 @@ class Reply:
     text: str
     inline: InlineKeyboard | None = None
     markdown: bool = False
+    # A thread subject, if this reply should chain onto whatever this tool last
+    # sent about the same subject (e.g. "idea:12") rather than sitting as a bare
+    # new message. None means "don't thread" -- most replies still don't.
+    thread_subject: str | None = None
 
 
 # A command handler takes the raw text after the leading "/word" plus the

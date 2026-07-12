@@ -82,6 +82,23 @@ def test_send_message_addresses_an_explicit_chat(urlopen: _FakeUrlopen) -> None:
     assert urlopen.calls[0][1]["chat_id"] == "999"
 
 
+def test_send_message_with_reply_to_sets_reply_parameters(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"ok": True, "result": {"message_id": 8}})
+
+    _transport().send_message("chained", reply_to_message_id=5)
+
+    payload = urlopen.calls[0][1]
+    assert payload["reply_parameters"] == {"message_id": 5, "allow_sending_without_reply": True}
+
+
+def test_send_message_without_reply_to_omits_reply_parameters(urlopen: _FakeUrlopen) -> None:
+    urlopen.queue({"ok": True, "result": {"message_id": 9}})
+
+    _transport().send_message("standalone")
+
+    assert "reply_parameters" not in urlopen.calls[0][1]
+
+
 def test_send_message_with_inline_builds_a_callback_keyboard(
     urlopen: _FakeUrlopen,
 ) -> None:
