@@ -148,6 +148,28 @@ def test_alert_spend_pushes_and_exits_zero(
     assert Ledger(ledger_path).read(kind="spend_alert")[0].outcome == "success"
 
 
+def test_escalate_blocker_pushes_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, ledger_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    transport = FakeTransport()
+    _use_transport(monkeypatch, transport)
+
+    code = cli.main(
+        [
+            "escalate-blocker",
+            "--candidate", "my-guard#3",
+            "--detail", "gave up after 3 attempts",
+            "--attempt", "3",
+            "--ledger", str(ledger_path),
+        ]
+    )
+
+    assert code == 0
+    assert "blocker alert pushed for my-guard#3" in capsys.readouterr().out
+    assert len(transport.sent) == 1
+    assert Ledger(ledger_path).read(kind="blocker_alert")[0].data["candidate"] == "my-guard#3"
+
+
 def _captured_run(monkeypatch: pytest.MonkeyPatch) -> dict:
     captured: dict = {}
 
@@ -363,6 +385,9 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
         "guide:trial",
         "spend:halt",
         "spend:raise",
+        "blocker:retry",
+        "blocker:skip",
+        "blocker:take",
     }
 
     who = operator()
@@ -382,6 +407,16 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
     ).text
     assert "isn't wired up" in callback_routes["spend:raise"](
         CallbackAction("spend:raise", "30.00"), who
+    ).text
+
+    assert "Retry recorded" in callback_routes["blocker:retry"](
+        CallbackAction("blocker:retry", "my-guard#3"), who
+    ).text
+    assert "skipped" in callback_routes["blocker:skip"](
+        CallbackAction("blocker:skip", "my-guard#3"), who
+    ).text
+    assert "yours" in callback_routes["blocker:take"](
+        CallbackAction("blocker:take", "my-guard#3"), who
     ).text
 
 
