@@ -155,6 +155,18 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   `/help` (`router.unknown_command`) and no ledger entry. Note `parse_command`
   strips the `@botname` suffix Telegram appends in group chats — its own
   autocomplete emits `/idea@MyBot` there, which used to parse as an unknown name.
+- **A tap must say something back.** `answerCallbackQuery` used to be called with
+  **no text**: Telegram silently stopped the button's spinner, left the Allow/Deny
+  buttons sitting on the message, and showed nothing. A human who tapped Allow saw
+  *exactly* what they would have seen had the bot been dead — while behind them the
+  approval went through and a PR merged. ("I clicked Allow and nothing happened"
+  was a complaint about being told nothing, and it was right.) The tap now gets a
+  toast (`ASK_ACKS`, keyed by `callback_data` so it cannot drift from
+  `ASK_DECISIONS`) and the keyboard is stripped, so an answered prompt stops looking
+  pending. **Order is load-bearing:** the ledger entry is recorded *first* — a
+  separate `ask` process is blocking on it — and every acknowledgement after it is
+  wrapped and best-effort, because nothing about telling the human may reach back
+  and undo an approval they already gave.
 - **The daemon must never escalate an `ASK` through itself.** MyGuard resolves an
   `ASK` by shelling out to `$MYTHINGS_ASK_CMD` — which is `mytelegrambot ask`,
   which blocks waiting for the `kind=callback` ledger entry *this daemon* writes

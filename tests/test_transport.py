@@ -366,3 +366,27 @@ def test_send_chat_action_swallows_a_network_error(urlopen: _FakeUrlopen) -> Non
     urlopen.queue(urllib.error.URLError("down"))
 
     _transport().send_chat_action("typing")
+
+
+def test_clear_inline_keyboard_strips_the_buttons_off_an_answered_prompt(
+    urlopen: _FakeUrlopen,
+) -> None:
+    # Without this an Allow/Deny prompt keeps its buttons forever and reads as still
+    # pending, so a human who already tapped cannot tell their tap did anything.
+    urlopen.queue({"result": True})
+
+    _transport().clear_inline_keyboard(77, chat_id="42")
+
+    url, payload, _timeout = urlopen.calls[0]
+    assert url.endswith("/editMessageReplyMarkup")
+    assert payload == {"chat_id": "42", "message_id": 77}
+    # No reply_markup at all: that is what removes the keyboard.
+    assert "reply_markup" not in payload
+
+
+def test_clear_inline_keyboard_swallows_a_network_error(urlopen: _FakeUrlopen) -> None:
+    # The decision is already durable in the ledger and a separate `ask` process is
+    # unblocking on it. Cosmetics must never be able to undo that.
+    urlopen.queue(urllib.error.URLError("down"))
+
+    _transport().clear_inline_keyboard(77)

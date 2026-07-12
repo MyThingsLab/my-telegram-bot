@@ -36,6 +36,8 @@ class TelegramTransport(Protocol):
 
     def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None: ...
 
+    def clear_inline_keyboard(self, message_id: int, *, chat_id: str | None = None) -> None: ...
+
 
 def chunk_for_telegram(text: str, *, limit: int = TELEGRAM_MAX_LEN) -> list[str]:
     # An explored brief is the whole payload of /idea, and a digest is the whole
@@ -132,6 +134,22 @@ class HTTPTelegramTransport:
             self._call("sendChatAction", {"chat_id": chat_id or self._chat_id, "action": action})
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             print(f"mytelegrambot: sendChatAction failed (cosmetic): {describe(exc)}")
+
+    def clear_inline_keyboard(self, message_id: int, *, chat_id: str | None = None) -> None:
+        # Strips the buttons off a prompt that has been answered. Without this, an
+        # Allow/Deny prompt keeps its buttons forever and reads as still pending --
+        # so a human who has already tapped cannot tell their tap did anything, and
+        # taps again.
+        #
+        # Best-effort like every other cosmetic call: the decision is already durable
+        # in the ledger by the time this runs, and a failure here must never undo it.
+        try:
+            self._call(
+                "editMessageReplyMarkup",
+                {"chat_id": chat_id or self._chat_id, "message_id": message_id},
+            )
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"mytelegrambot: editMessageReplyMarkup failed (cosmetic): {describe(exc)}")
 
     def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
         # Registers the bot-wide command list Telegram shows as autocomplete and
