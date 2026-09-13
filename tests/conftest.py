@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mythings.ledger import LedgerEntry
 from mythings.testers import Tester
+from mythings.testing import FakeTransport as FakeTransport
 
 from mytelegrambot.authz import OPERATOR, TESTER, Principal
 from mytelegrambot.router import InlineKeyboard, Replies, Reply, as_replies
@@ -63,69 +64,7 @@ def callback_update(
     }
 
 
-class FakeTransport:
-    # Mocks only the Telegram HTTP boundary
-    # (send_message/fetch_updates/answer_callback_query).
-    def __init__(self, *, updates: list[dict] | None = None) -> None:
-        self.sent: list[tuple[str, InlineKeyboard | None]] = []
-        self.sent_to: list[str | None] = []
-        self.keyboards: list[tuple[tuple[str, ...], ...] | None] = []
-        self.commands_set: list[tuple[tuple[str, str], ...]] = []
-        self.fetched: list[tuple[int | None, float]] = []
-        self.answered: list[str] = []
-        self.markdown: list[bool] = []
-        self.actions: list[tuple[str, str | None]] = []
-        self.cleared: list[int] = []
-        self.edits: list[tuple[int, str]] = []
-        self.answers: list[tuple[str, str]] = []
-        self.alerts: list[bool] = []
-        self.reply_to: list[int | None] = []
-        self._updates = updates or []
-        self._next_id = 1
 
-    def send_message(
-        self,
-        text: str,
-        *,
-        chat_id: str | None = None,
-        inline: InlineKeyboard | None = None,
-        keyboard: tuple[tuple[str, ...], ...] | None = None,
-        markdown: bool = False,
-        reply_to_message_id: int | None = None,
-    ) -> int:
-        self.sent.append((text, inline))
-        self.sent_to.append(chat_id)
-        self.keyboards.append(keyboard)
-        self.markdown.append(markdown)
-        self.reply_to.append(reply_to_message_id)
-        message_id = self._next_id
-        self._next_id += 1
-        return message_id
-
-    def send_chat_action(self, action: str, *, chat_id: str | None = None) -> None:
-        self.actions.append((action, chat_id))
-
-    def clear_inline_keyboard(self, message_id: int, *, chat_id: str | None = None) -> None:
-        self.cleared.append(message_id)
-
-    def edit_message_text(self, message_id: int, text: str, *, chat_id: str | None = None) -> None:
-        self.edits.append((message_id, text))
-
-    def set_my_commands(self, commands: tuple[tuple[str, str], ...]) -> None:
-        self.commands_set.append(commands)
-
-    def answer_callback_query(
-        self, callback_query_id: str, *, text: str = "", alert: bool = False
-    ) -> None:
-        self.answered.append(callback_query_id)
-        self.answers.append((callback_query_id, text))
-        self.alerts.append(alert)
-
-    def fetch_updates(self, *, offset: int | None = None, timeout: float = 0) -> list[dict]:
-        self.fetched.append((offset, timeout))
-        if offset is None:
-            return list(self._updates)
-        return [u for u in self._updates if u["update_id"] >= offset]
 
 
 class ErrorTransport:
