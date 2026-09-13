@@ -29,6 +29,7 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
 markers = ["slow: integration/slow tests, excluded from the fast local loop"]
