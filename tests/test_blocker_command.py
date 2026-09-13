@@ -4,7 +4,7 @@ from pathlib import Path
 
 from mythings.ledger import Ledger
 
-from conftest import as_tester, operator
+from conftest import FakeTransport, as_tester, operator
 from mytelegrambot.blocker_command import (
     blocker_alert_buttons,
     blocker_alert_text,
@@ -14,15 +14,6 @@ from mytelegrambot.blocker_command import (
     send_blocker_alert,
 )
 from mytelegrambot.router import CallbackAction
-
-
-class FakeTransport:
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, object]] = []
-
-    def send_message(self, text, *, keyboard=None, inline=None):
-        self.sent.append((text, inline))
-        return 7
 
 
 def _tester_store(tmp_path: Path):
@@ -56,7 +47,7 @@ def test_send_blocker_alert_pushes_and_records(tmp_path: Path) -> None:
         candidate="my-guard#3", detail="gave up", attempt=3, transport=transport, ledger=ledger
     )
 
-    assert message_id == 7
+    assert message_id == 1
     assert len(transport.sent) == 1
     entry = ledger.read(kind="blocker_alert")[0]
     assert entry.outcome == "success"
