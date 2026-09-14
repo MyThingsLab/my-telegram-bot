@@ -38,6 +38,7 @@ from mytelegrambot.notifier import notify
 from mytelegrambot.pending import PendingChats
 from mytelegrambot.pending import pending as pending_chats
 from mytelegrambot.policy import ask_human
+from mytelegrambot.prs_command import approve_pr, handle_prs
 from mytelegrambot.router import CallbackAction, CallbackHandler, CommandHandler, Reply
 from mytelegrambot.spend_command import handle_spend_halt, handle_spend_raise, send_spend_alert
 from mytelegrambot.status_command import build_status
@@ -64,6 +65,7 @@ def build_routes(
     note_repo: str,
     catalog,
     halt: HaltControl | None = None,
+    prs_snapshot: Path | None = None,
 ) -> dict[str, CommandHandler]:
     def _guide(principal: Principal) -> Guide:
         # One Guide per request so a tester's activity lands in their own ledger.
@@ -115,6 +117,9 @@ def build_routes(
     def resume_cmd(text: str, principal: Principal) -> Reply:
         return handle_resume(text, principal, control=halt, policy=guard, ledger=ledger)
 
+    def prs_cmd(text: str, principal: Principal) -> Reply:
+        return handle_prs(text, principal, snapshot_path=prs_snapshot)
+
     return {
         "idea": idea,
         "note": note,
@@ -123,6 +128,7 @@ def build_routes(
         "status": status,
         "halt": halt_cmd,
         "resume": resume_cmd,
+        "prs": prs_cmd,
         "help": help_reply,
         "start": help_reply,
     }
@@ -139,6 +145,7 @@ def build_callback_routes(
     note_repo: str,
     catalog,
     halt: HaltControl | None = None,
+    prs_snapshot: Path | None = None,
 ) -> dict[str, CallbackHandler]:
     del note_repo  # notes have no buttons
 
@@ -187,6 +194,9 @@ def build_callback_routes(
     def blocker_take(action: CallbackAction, principal: Principal) -> Reply:
         return handle_blocker_take(action, principal, ledger=ledger)
 
+    def pr_approve(action: CallbackAction, principal: Principal) -> Reply:
+        return approve_pr(action, principal, snapshot_path=prs_snapshot, ledger=ledger)
+
     return {
         "idea:explore": explore,
         "idea:close": close,
@@ -196,6 +206,7 @@ def build_callback_routes(
         "blocker:retry": blocker_retry,
         "blocker:skip": blocker_skip,
         "blocker:take": blocker_take,
+        "pr:approve": pr_approve,
     }
 
 
@@ -291,6 +302,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="admit registered testers from this database (default: operator only)",
     )
+    run.add_argument(
+        "--prs-snapshot",
+        type=Path,
+        default=None,
+        help="path to my-fleet's ready-PR snapshot (JSON) that /prs reads. Absent, "
+        "/prs says the merge queue isn't wired up. This bot never calls gh itself -- "
+        "my-fleet's own merge_ready_prs.py owns the write side and the actual merge.",
+    )
 
     sub.add_parser(
         "setup", help="register the command menu and persistent reply keyboard with Telegram"
@@ -381,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
             # Built once: reads the packaged phrasebook and core's fleet manifest,
             # and refuses outright if the phrasebook describes an unshipped tool.
             "catalog": build_catalog(),
+            "prs_snapshot": args.prs_snapshot,
         }
         halt = HaltControl(args.halt_cmd) if args.halt_cmd else None
         print(
