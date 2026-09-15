@@ -23,7 +23,9 @@ from mytelegrambot.router import CallbackAction
 # only runs `--plan-cmd` and relays its stdout verbatim.
 
 
-def _recording_control(tmp_path: Path, *, exit_code: int = 0, output: str = "1. my-idea#12") -> tuple:
+def _recording_control(
+    tmp_path: Path, *, exit_code: int = 0, output: str = "1. my-idea#12"
+) -> tuple:
     seen = tmp_path / "flags.txt"
     script = (
         "import sys, pathlib;"
