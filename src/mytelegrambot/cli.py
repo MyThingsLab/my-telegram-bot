@@ -37,6 +37,12 @@ from mytelegrambot.note_command import DEFAULT_NOTE_REPO, metered_note
 from mytelegrambot.notifier import notify
 from mytelegrambot.pending import PendingChats
 from mytelegrambot.pending import pending as pending_chats
+from mytelegrambot.plan_command import (
+    handle_plan,
+    handle_plan_approve,
+    handle_plan_reorder,
+    handle_plan_skip,
+)
 from mytelegrambot.policy import ask_human
 from mytelegrambot.router import CallbackAction, CallbackHandler, CommandHandler, Reply
 from mytelegrambot.spend_command import handle_spend_halt, handle_spend_raise, send_spend_alert
@@ -64,6 +70,7 @@ def build_routes(
     note_repo: str,
     catalog,
     halt: HaltControl | None = None,
+    plan: HaltControl | None = None,
 ) -> dict[str, CommandHandler]:
     def _guide(principal: Principal) -> Guide:
         # One Guide per request so a tester's activity lands in their own ledger.
@@ -115,6 +122,9 @@ def build_routes(
     def resume_cmd(text: str, principal: Principal) -> Reply:
         return handle_resume(text, principal, control=halt, policy=guard, ledger=ledger)
 
+    def plan_cmd(text: str, principal: Principal) -> Reply:
+        return handle_plan(text, principal, control=plan)
+
     return {
         "idea": idea,
         "note": note,
@@ -123,6 +133,7 @@ def build_routes(
         "status": status,
         "halt": halt_cmd,
         "resume": resume_cmd,
+        "plan": plan_cmd,
         "help": help_reply,
         "start": help_reply,
     }
@@ -187,6 +198,15 @@ def build_callback_routes(
     def blocker_take(action: CallbackAction, principal: Principal) -> Reply:
         return handle_blocker_take(action, principal, ledger=ledger)
 
+    def plan_approve(action: CallbackAction, principal: Principal) -> Reply:
+        return handle_plan_approve(action, principal, ledger=ledger)
+
+    def plan_reorder(action: CallbackAction, principal: Principal) -> Reply:
+        return handle_plan_reorder(action, principal, ledger=ledger)
+
+    def plan_skip(action: CallbackAction, principal: Principal) -> Reply:
+        return handle_plan_skip(action, principal, ledger=ledger)
+
     return {
         "idea:explore": explore,
         "idea:close": close,
@@ -196,6 +216,9 @@ def build_callback_routes(
         "blocker:retry": blocker_retry,
         "blocker:skip": blocker_skip,
         "blocker:take": blocker_take,
+        "plan:approve": plan_approve,
+        "plan:reorder": plan_reorder,
+        "plan:skip": plan_skip,
     }
 
 
@@ -283,6 +306,14 @@ def main(argv: list[str] | None = None) -> int:
         "'python3 /path/to/fleet_dispatch.py'. /halt appends --abort and /resume "
         "--clear-halt. Absent, /halt says so rather than pretending. A CLI hand-off: "
         "the bot never imports the fleet or learns where its marker file lives.",
+    )
+    run.add_argument(
+        "--plan-cmd",
+        default=None,
+        help="command that prints myplanner's current recommended sequence, e.g. "
+        "'myplanner plan'. /plan runs it and relays its stdout verbatim. Absent, "
+        "/plan says so rather than pretending. A CLI hand-off: the bot never "
+        "imports myplanner.",
     )
     run.add_argument("--ledger", type=Path, default=Path(".mythings/ledger.jsonl"))
     run.add_argument(
@@ -383,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
             "catalog": build_catalog(),
         }
         halt = HaltControl(args.halt_cmd) if args.halt_cmd else None
+        plan = HaltControl(args.plan_cmd) if args.plan_cmd else None
         print(
             f"mytelegrambot: polling (long_poll={args.long_poll}s, "
             f"testers={'on' if store else 'off'})"
@@ -391,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
             ledger=ledger,
             transport=transport,
             authorizer=authorizer,
-            routes=build_routes(**wiring, halt=halt),
+            routes=build_routes(**wiring, halt=halt, plan=plan),
             callback_routes=build_callback_routes(**wiring, halt=halt),
             # Recorded regardless of --testers-db: you have to see who knocked
             # before you have anyone to put in a database.
