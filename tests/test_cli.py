@@ -197,6 +197,7 @@ def test_run_wires_the_daemon_with_routes_and_an_authorizer(
         "status",
         "halt",
         "resume",
+        "plan",
         "help",
         "start",
     }
@@ -388,6 +389,9 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
         "blocker:retry",
         "blocker:skip",
         "blocker:take",
+        "plan:approve",
+        "plan:reorder",
+        "plan:skip",
     }
 
     who = operator()
@@ -418,6 +422,21 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
     assert "yours" in callback_routes["blocker:take"](
         CallbackAction("blocker:take", "my-guard#3"), who
     ).text
+
+    assert "Approved" in callback_routes["plan:approve"](
+        CallbackAction("plan:approve", "current"), who
+    ).text
+    assert "Reorder requested" in callback_routes["plan:reorder"](
+        CallbackAction("plan:reorder", "current"), who
+    ).text
+    assert "Skipping" in callback_routes["plan:skip"](
+        CallbackAction("plan:skip", "current"), who
+    ).text
+    assert [e.outcome for e in Ledger(ledger_path).read(kind="plan_decision")] == [
+        "approve",
+        "reorder",
+        "skip",
+    ]
 
 
 def test_testers_pending_lists_knocks_with_a_ready_to_paste_command(
@@ -655,3 +674,46 @@ def test_halt_routes_exist_but_do_nothing_when_no_command_is_configured() -> Non
     )
 
     assert "isn't wired up" in routes["halt"]("", operator()).text
+
+
+def test_build_routes_wires_plan_to_the_configured_command(tmp_path: Path) -> None:
+    from myguard import Guard
+
+    from mytelegrambot.halt_command import HaltControl
+
+    script = "print('1. my-idea#12\\n2. my-guard#7')"
+    ledger = Ledger(tmp_path / "l.jsonl")
+
+    routes = cli.build_routes(
+        ledger=ledger,
+        store=None,
+        github=None,
+        guard=Guard(ask=None),
+        engine=NoopEngine(),
+        repo="o/r",
+        note_repo="o/r",
+        catalog=None,
+        plan=HaltControl(f"{sys.executable} -c {script!r}"),
+    )
+
+    reply = routes["plan"]("", operator())
+
+    assert "my-idea#12" in reply.text
+    assert reply.inline is not None
+
+
+def test_plan_route_exists_but_does_nothing_when_no_command_is_configured() -> None:
+    from myguard import Guard
+
+    routes = cli.build_routes(
+        ledger=Ledger(Path("/dev/null")),
+        store=None,
+        github=None,
+        guard=Guard(ask=None),
+        engine=NoopEngine(),
+        repo="o/r",
+        note_repo="o/r",
+        catalog=None,
+    )
+
+    assert "isn't wired up" in routes["plan"]("", operator()).text

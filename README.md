@@ -82,6 +82,18 @@ the one exception (see below).
   bot appends `--abort` / `--clear-halt`. It never imports the fleet and never
   learns where its marker file lives. The reply is the command's own output,
   verbatim — never a claim about what happened that the command didn't make.
+- **Plan:** `/plan` renders MyPlanner's currently recommended build sequence
+  with **Approve** / **Reorder** / **Skip this one** buttons, so the operator
+  gets a say before MyOrchestrator's `next` acts on it unattended
+  (`my-fleet#66`). **Operator only**, and — like `/halt` — a pure CLI
+  hand-off: point `run --plan-cmd` at `myplanner plan` and the bot relays its
+  stdout verbatim, never a summary composed over it. A tap only *records* the
+  decision to a `kind=plan_decision` ledger entry for MyOrchestrator's `next`
+  to consult; "Reorder" has no free-text entry point from a button, so it
+  records the request rather than claiming a reorder it didn't do. Leaving a
+  `/plan` prompt unanswered writes nothing — `next` falls back to its normal
+  unattended ranking exactly as if `/plan` had never been sent, the same
+  fail-closed shape as an unanswered `ask` collapsing to `DENY`.
 - **Setup:** `mytelegrambot setup` is a one-off admin call that registers the
   command menu (Telegram autocomplete + the ☰ menu button) and shows a
   persistent reply keyboard of tappable `/command` shortcuts. Taps arrive as
@@ -98,7 +110,7 @@ from the environment, never logged, never written to the ledger.
 mytelegrambot setup
 mytelegrambot notify [--since ISO8601]
 mytelegrambot ask --action-kind <kind> --payload-json <json> [--timeout 300]
-mytelegrambot run [--repo owner/name] [--note-repo owner/name] [--engine claude-cli|noop] [--testers-db PATH] [--halt-cmd CMD]
+mytelegrambot run [--repo owner/name] [--note-repo owner/name] [--engine claude-cli|noop] [--testers-db PATH] [--halt-cmd CMD] [--plan-cmd CMD]
 mytelegrambot testers pending
 mytelegrambot testers add <handle> --chat-id <id> --quota <n>
 mytelegrambot testers disable <id>

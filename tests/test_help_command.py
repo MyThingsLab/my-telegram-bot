@@ -11,6 +11,7 @@ def test_help_reply_lists_the_available_commands() -> None:
 
     assert "/idea" in reply
     assert "/help" in reply
+    assert "/plan" in reply
 
 
 def test_help_reply_ignores_its_arguments() -> None:
