@@ -52,7 +52,7 @@ def test_notify_pushes_and_exits_zero(
     monkeypatch: pytest.MonkeyPatch, ledger_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     Ledger(ledger_path).append(
-        entry("mytester", "run", "success", "cover pkg:f", ts="2026-07-06T01:00:00Z")
+        entry("fleet_dispatch", "dispatch", "failure", "crashed", ts="2026-07-06T01:00:00Z")
     )
     transport = FakeTransport()
     _use_transport(monkeypatch, transport)
@@ -79,7 +79,7 @@ def test_notify_send_failure_exits_nonzero(
     monkeypatch: pytest.MonkeyPatch, ledger_path: Path
 ) -> None:
     Ledger(ledger_path).append(
-        entry("mytester", "run", "success", "cover pkg:f", ts="2026-07-06T01:00:00Z")
+        entry("fleet_dispatch", "dispatch", "failure", "crashed", ts="2026-07-06T01:00:00Z")
     )
     _use_transport(monkeypatch, ErrorTransport())
 
