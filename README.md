@@ -82,6 +82,20 @@ the one exception (see below).
   bot appends `--abort` / `--clear-halt`. It never imports the fleet and never
   learns where its marker file lives. The reply is the command's own output,
   verbatim — never a claim about what happened that the command didn't make.
+- **Merge queue:** `/prs` lists open PRs my-fleet currently considers green and
+  mergeable, each with an **Approve & merge** button, so the operator can merge
+  from their phone instead of sitting at a laptop for a fleet `--ask` pass.
+  **Operator only** — same posture as `/halt` — and this tool's authority stays
+  fixed at comms: it never calls `gh` itself. It only reads a small JSON
+  snapshot my-fleet writes of its own ready-PR list (pointed at by
+  `run --prs-snapshot`; absent that flag, `/prs` says the queue isn't wired
+  up). A tap re-checks the *current* snapshot before doing anything — refusing
+  a stale button for a PR that already merged or fell out of green, or a forged
+  one naming a PR never shown — then stops at recording an authorized,
+  subject-scoped approval in the ledger. my-fleet's own `merge_ready_prs.py`
+  is what reads that record and performs the actual merge, through its
+  existing `Guard`-gated `pr-merge` seam: a human always merges, and this repo
+  never grows a second write path to GitHub.
 - **Setup:** `mytelegrambot setup` is a one-off admin call that registers the
   command menu (Telegram autocomplete + the ☰ menu button) and shows a
   persistent reply keyboard of tappable `/command` shortcuts. Taps arrive as
@@ -98,7 +112,7 @@ from the environment, never logged, never written to the ledger.
 mytelegrambot setup
 mytelegrambot notify [--since ISO8601]
 mytelegrambot ask --action-kind <kind> --payload-json <json> [--timeout 300]
-mytelegrambot run [--repo owner/name] [--note-repo owner/name] [--engine claude-cli|noop] [--testers-db PATH] [--halt-cmd CMD]
+mytelegrambot run [--repo owner/name] [--note-repo owner/name] [--engine claude-cli|noop] [--testers-db PATH] [--halt-cmd CMD] [--prs-snapshot PATH]
 mytelegrambot testers pending
 mytelegrambot testers add <handle> --chat-id <id> --quota <n>
 mytelegrambot testers disable <id>

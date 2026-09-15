@@ -197,6 +197,7 @@ def test_run_wires_the_daemon_with_routes_and_an_authorizer(
         "status",
         "halt",
         "resume",
+        "prs",
         "help",
         "start",
     }
@@ -388,6 +389,7 @@ def test_run_wires_the_callback_routes_to_the_button_handlers(
         "blocker:retry",
         "blocker:skip",
         "blocker:take",
+        "pr:approve",
     }
 
     who = operator()

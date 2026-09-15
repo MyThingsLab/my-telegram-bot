@@ -95,7 +95,9 @@ def prs_buttons(prs: list[ReadyPR]) -> InlineKeyboard | None:
         return None
     # One button per row: labels carry each PR's own subject since Telegram
     # renders buttons below the whole message, not alongside the line they act on.
-    return tuple((("✅ Merge " + pr.subject, encode_action("pr", pr.subject, "approve")),) for pr in prs)
+    return tuple(
+        (("✅ Merge " + pr.subject, encode_action("pr", pr.subject, "approve")),) for pr in prs
+    )
 
 
 def handle_prs(_args: str, principal: Principal, *, snapshot_path: Path | None) -> Reply:

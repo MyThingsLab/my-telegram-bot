@@ -201,6 +201,29 @@ covered here defers to `HARNESS.md`, then `my-things-core/docs/CONVENTIONS.md`.
   actually said is exactly the hallucination the no-prose rule exists to prevent.
   Kept out of `COMMAND_MENU` on purpose: `setMyCommands` advertises to every chat,
   and advertising a fleet kill switch to testers is an invitation.
+- **`/prs` extends comms, never write authority.** `my-fleet`'s
+  `merge_ready_prs.py` is the only process that ever calls `gh pr merge`,
+  gated by `Guard`'s `pr-merge` Action — this tool's own authority is fixed at
+  "comms only, fail-closed" and `/prs` does not change that. `my-fleet`
+  periodically writes a small JSON snapshot of what it currently considers
+  green and mergeable (`{"repo", "number", "title", "url"}` per entry, see
+  `prs_command.load_ready_prs`); `run --prs-snapshot PATH` points the daemon
+  at it, and this module only ever reads that file — it never calls `gh`
+  itself. **Operator only**, the same posture `/halt` takes on the fleet kill
+  switch: an internal fleet-management view has no business in front of a
+  tester. Each PR's "Approve & merge" button carries its own `repo#number` as
+  the callback subject (`pr:<repo#number>:approve`, `router.encode_action`),
+  and a tap re-reads the *current* snapshot rather than trusting the encoded
+  subject outright — refusing a stale button (the PR already merged, or fell
+  out of green since `/prs` was last shown) or a forged one naming a PR never
+  on any ready list, the same subject-authorization discipline `idea_command`
+  already applies to `Explore deeper`/`Close idea`. A tap's whole job is
+  recording an authorized, subject-scoped approval as a `pr_approved` ledger
+  entry — it never itself calls `gh pr merge`; `my-fleet`'s own
+  `merge_ready_prs.py` (or a thin entry point there) is what consumes that
+  record and performs the actual merge through its existing `Guard`/`pr-merge`
+  seam. No new write path to GitHub exists anywhere in this repo because of
+  this command.
 - **Authorization is not the transport's job.** `fetch_updates` returns every
   update Telegram sends; `authz.ChatAuthorizer` decides who may be heard.
   The operator (`TELEGRAM_CHAT_ID`) is authorized *by configuration, never by

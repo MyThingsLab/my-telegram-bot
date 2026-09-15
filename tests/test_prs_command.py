@@ -134,7 +134,10 @@ def test_a_tester_can_never_approve_a_merge(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "l.jsonl")
 
     reply = _approve(
-        "MyThingsLab/my-fleet#67", as_tester(_tester_store(tmp_path)), snapshot_path=path, ledger=ledger
+        "MyThingsLab/my-fleet#67",
+        as_tester(_tester_store(tmp_path)),
+        snapshot_path=path,
+        ledger=ledger,
     )
 
     assert "Only the operator" in reply.text
