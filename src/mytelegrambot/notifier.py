@@ -43,10 +43,20 @@ def last_notified_count(ledger: Ledger) -> int:
 # successful dispatches.
 _WAITING_OUTCOMES = {"needs_human", "blocked", "halted_critical"}
 _WAITING_KINDS = {"spend_alert", "halt"}
-_FAILED_OUTCOMES = {"failure"}
+# Both spellings are live in the ledger and they mean the same thing. `outcome`
+# is a free-form string, so nothing ever forced them to agree: mythings.ledger's
+# own checkpoint reader treats `failed` as bad, this module only knew `failure`,
+# and every `fleet_dispatch/dispatch/failed` entry therefore landed in "Other" --
+# a real dispatch failure, filed under the one heading nobody reads.
+_FAILED_OUTCOMES = {"failure", "failed"}
 # `usage` entries are one per headless session and say nothing on their own --
 # they roll into the cost total instead of appearing as lines.
 _COST_ONLY_KIND = "usage"
+
+# What an unattended digest is allowed to interrupt a human for. Everything else
+# is still bucketed, still in the ledger, and still shown by an explicit
+# `--since` run -- it just never rings a phone on its own.
+_ALERT_BUCKETS = ("waiting", "failed")
 
 
 def _bucket(entry: LedgerEntry) -> str:
@@ -86,6 +96,38 @@ def format_notify_message(entries: list[LedgerEntry]) -> str:
     return "\n\n".join(sections) if sections else "nothing to report"
 
 
+def alerting(entries: list[LedgerEntry]) -> list[LedgerEntry]:
+    return [e for e in entries if _bucket(e) in _ALERT_BUCKETS]
+
+
+# Bucketing made the digest readable but did not make it quiet: it still sent
+# every entry, every cycle, and the buckets themselves showed why that could
+# never work. Measured over the two live ledgers, 246 of 251 and 402 of 467
+# entries fell into "Other" -- 301 of them `fleet_cycle/heartbeat/ok`, the
+# dead-man's-switch's own liveness records, which exist purely so `heartbeat
+# check` can read them back. An operator scrolling past hundreds of those to
+# find the five failures stops reading the channel, and then the ASK prompts
+# that gate merges go unanswered too. Noise here has a safety cost, not just an
+# annoyance cost.
+#
+# So the automatic digest reports only what a human is expected to act on.
+# The rest is not discarded -- it is counted, and one line says how to see it.
+def format_alert_message(entries: list[LedgerEntry]) -> str:
+    alerts = alerting(entries)
+    sections = []
+    waiting = [_line(e) for e in alerts if _bucket(e) == "waiting"]
+    failed = [_line(e) for e in alerts if _bucket(e) == "failed"]
+    if waiting:
+        sections.append("⏳ Waiting on you:\n" + "\n".join(waiting))
+    if failed:
+        sections.append("❌ Failed:\n" + "\n".join(failed))
+
+    routine = len(entries) - len(alerts)
+    if routine:
+        sections.append(f"🔕 {routine} routine entries not shown (`notify --since <ts>` for all)")
+    return "\n\n".join(sections)
+
+
 @dataclass(frozen=True)
 class NotifyResult:
     outcome: str  # success | skipped | failure
@@ -103,21 +145,30 @@ def notify(
     if since is not None:
         # Ad-hoc manual window: send everything after `since`, but leave the
         # incremental cursor untouched (this record carries no notified_count),
-        # so a manual re-send never consumes the automatic queue.
+        # so a manual re-send never consumes the automatic queue. A human who
+        # names a window asked for the whole picture, so this path stays a full
+        # digest -- it is the escape hatch the alert line points at.
         entries = [e for e in _notifiable(all_entries) if e.ts > since]
         cursor: dict[str, int] = {}
         window = f"since {since}"
+        text = format_notify_message(entries)
+        sendable = entries
     else:
         entries = _notifiable(all_entries[last_notified_count(ledger) :])
         cursor = {"notified_count": len(all_entries)}
         window = "incremental"
+        text = format_alert_message(entries)
+        sendable = alerting(entries)
 
-    if not entries:
+    if not sendable:
+        # The cursor advances over the routine entries even though nothing was
+        # sent. Holding it would mean every future alert dragged the entire
+        # unsent backlog's count along behind it, growing without bound.
         ledger.record(
             tool=_SELF_TOOL,
             kind="notify",
             outcome="skipped",
-            detail=f"nothing new ({window})",
+            detail=f"nothing to alert on ({window}); {len(entries)} routine",
             message_id=None,
             **cursor,
         )
@@ -134,24 +185,21 @@ def notify(
     # strictly better than a dropped one, which is what advancing the cursor here
     # would risk.
     try:
-        message_ids = [
-            transport.send_message(chunk)
-            for chunk in chunk_for_telegram(format_notify_message(entries))
-        ]
+        message_ids = [transport.send_message(chunk) for chunk in chunk_for_telegram(text)]
     except Exception as exc:
         # The sole comms channel must not crash on a transient Telegram outage.
         # Record nothing: with no notify entry the cursor stays put, so the same
         # digest is retried on the next run rather than lost.
         print(f"mytelegrambot: notify send failed, will retry next run: {describe(exc)}")
-        return NotifyResult("failure", len(entries), None)
+        return NotifyResult("failure", len(sendable), None)
     message_id = message_ids[0]
 
     ledger.record(
         tool=_SELF_TOOL,
         kind="notify",
         outcome="success",
-        detail=f"pushed {len(entries)} entries ({window})",
+        detail=f"pushed {len(sendable)} entries ({window})",
         message_id=message_id,
         **cursor,
     )
-    return NotifyResult("success", len(entries), message_id)
+    return NotifyResult("success", len(sendable), message_id)
